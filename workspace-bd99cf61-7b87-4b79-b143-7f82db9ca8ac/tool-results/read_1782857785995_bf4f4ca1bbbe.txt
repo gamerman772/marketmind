@@ -1,0 +1,931 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useCallback } from 'react';
+     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→import {
+     6→  Zap,
+     7→  Play,
+     8→  CheckCircle2,
+     9→  XCircle,
+    10→  Loader2,
+    11→  Clock,
+    12→  RotateCcw,
+    13→  Trash2,
+    14→  Download,
+    15→  Volume2,
+    16→  Image,
+    17→  FileText,
+    18→  Mic,
+    19→  Film,
+    20→  Settings,
+    21→  Sparkles,
+    22→  TrendingUp,
+    23→  BarChart3,
+    24→  Eye,
+    25→  Calendar,
+    26→  ChevronDown,
+    27→  AlertCircle,
+    28→  ExternalLink,
+    29→  Video,
+    30→} from 'lucide-react';
+    31→import { Button } from '@/components/ui/button';
+    32→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+    33→import { Badge } from '@/components/ui/badge';
+    34→import { Input } from '@/components/ui/input';
+    35→import { Label } from '@/components/ui/label';
+    36→import { Switch } from '@/components/ui/switch';
+    37→import { Progress } from '@/components/ui/progress';
+    38→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    39→import {
+    40→  Dialog,
+    41→  DialogContent,
+    42→  DialogDescription,
+    43→  DialogHeader,
+    44→  DialogTitle,
+    45→} from '@/components/ui/dialog';
+    46→import { ScrollArea } from '@/components/ui/scroll-area';
+    47→import { Separator } from '@/components/ui/separator';
+    48→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    49→
+    50→// Types
+    51→interface VideoItem {
+    52→  id: string;
+    53→  title: string;
+    54→  hook: string;
+    55→  script: string;
+    56→  voiceoverUrl?: string;
+    57→  thumbnailUrl?: string;
+    58→  images: string;
+    59→  videoUrl?: string;
+    60→  videoPath?: string;
+    61→  status: string;
+    62→  sourceUrl?: string;
+    63→  sourceTitle?: string;
+    64→  sourceSnippet?: string;
+    65→  error?: string;
+    66→  duration?: number;
+    67→  views: number;
+    68→  createdAt: string;
+    69→  updatedAt: string;
+    70→}
+    71→
+    72→interface PipelineStatus {
+    73→  status: 'idle' | 'running';
+    74→  processing: number;
+    75→  completed: number;
+    76→  failed: number;
+    77→  total: number;
+    78→  recentVideos: VideoItem[];
+    79→}
+    80→
+    81→interface Config {
+    82→  id: string;
+    83→  autoGenerate: boolean;
+    84→  intervalMinutes: number;
+    85→  voiceName: string;
+    86→  voiceSpeed: number;
+    87→  targetDuration: number;
+    88→  niches: string;
+    89→}
+    90→
+    91→const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ElementType }> = {
+    92→  draft: { label: 'Draft', color: 'bg-gray-500', icon: FileText },
+    93→  generating_script: { label: 'Writing Script', color: 'bg-yellow-500', icon: Sparkles },
+    94→  capturing_screenshots: { label: 'Getting Screenshots', color: 'bg-orange-500', icon: Image },
+    95→  generating_voiceover: { label: 'Recording Voice', color: 'bg-purple-500', icon: Mic },
+    96→  assembling: { label: 'Assembling Video', color: 'bg-blue-500', icon: Film },
+    97→  complete: { label: 'Complete', color: 'bg-emerald-500', icon: CheckCircle2 },
+    98→  failed: { label: 'Failed', color: 'bg-red-500', icon: XCircle },
+    99→};
+   100→
+   101→export default function Home() {
+   102→  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
+   103→  const [videos, setVideos] = useState<VideoItem[]>([]);
+   104→  const [config, setConfig] = useState<Config | null>(null);
+   105→  const [isGenerating, setIsGenerating] = useState(false);
+   106→  const [customTopic, setCustomTopic] = useState('');
+   107→  const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(null);
+   108→  const [showSettings, setShowSettings] = useState(false);
+   109→  const [progress, setProgress] = useState(0);
+   110→  const [progressLabel, setProgressLabel] = useState('');
+   111→  const [logs, setLogs] = useState<string[]>([]);
+   112→
+   113→  const addLog = useCallback((msg: string) => {
+   114→    setLogs((prev) => [...prev.slice(-50), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+   115→  }, []);
+   116→
+   117→  const fetchStatus = useCallback(async () => {
+   118→    try {
+   119→      const res = await fetch('/api/pipeline');
+   120→      const data = await res.json();
+   121→      setPipelineStatus(data);
+   122→      setVideos(data.recentVideos || []);
+   123→
+   124→      // Derive progress from the latest active video status
+   125→      const activeVideo = (data.recentVideos || []).find((v: VideoItem) =>
+   126→        ['generating_script', 'generating_voiceover', 'capturing_screenshots', 'assembling'].includes(v.status)
+   127→      );
+   128→      if (activeVideo) {
+   129→        setIsGenerating(true);
+   130→        const statusProgress: Record<string, { pct: number; label: string }> = {
+   131→          generating_script: { pct: 20, label: 'Writing script...' },
+   132→          capturing_screenshots: { pct: 40, label: 'Capturing screenshots...' },
+   133→          generating_voiceover: { pct: 60, label: 'Recording voice...' },
+   134→          assembling: { pct: 85, label: 'Assembling video...' },
+   135→        };
+   136→        const sp = statusProgress[activeVideo.status];
+   137→        if (sp) {
+   138→          setProgress(sp.pct);
+   139→          setProgressLabel(sp.label);
+   140→        }
+   141→        // Detect newly completed videos
+   142→        if (activeVideo.status === 'complete') {
+   143→          addLog(`✅ Video complete: ${activeVideo.title}`);
+   144→        }
+   145→        if (activeVideo.status === 'failed') {
+   146→          addLog(`❌ Video failed: ${activeVideo.error || activeVideo.title}`);
+   147→        }
+   148→      } else if (isGenerating) {
+   149→        // Was generating, now no active video - it finished
+   150→        setIsGenerating(false);
+   151→        setProgress(100);
+   152→        setProgressLabel('Done!');
+   153→      }
+   154→    } catch (err) {
+   155→      // silent
+   156→    }
+   157→  }, [addLog, isGenerating]);
+   158→
+   159→  const fetchConfig = useCallback(async () => {
+   160→    try {
+   161→      const res = await fetch('/api/config');
+   162→      const data = await res.json();
+   163→      setConfig(data);
+   164→    } catch {
+   165→      // ignore
+   166→    }
+   167→  }, []);
+   168→
+   169→  useEffect(() => {
+   170→    const load = async () => {
+   171→      await fetchStatus();
+   172→      await fetchConfig();
+   173→    };
+   174→    load();
+   175→    const interval = setInterval(() => { fetchStatus(); }, 5000);
+   176→    return () => clearInterval(interval);
+   177→    // eslint-disable-next-line react-hooks/exhaustive-deps
+   178→  }, []);
+   179→
+   180→  const runPipeline = async (topic?: string) => {
+   181→    setLogs([]);
+   182→    addLog('🚀 Starting pipeline...');
+   183→    setProgress(5);
+   184→    setProgressLabel('Starting...');
+   185→
+   186→    try {
+   187→      const res = await fetch('/api/pipeline', {
+   188→        method: 'POST',
+   189→        headers: { 'Content-Type': 'application/json' },
+   190→        body: JSON.stringify({
+   191→          topic: topic || undefined,
+   192→          voiceName: config?.voiceName || 'alloy',
+   193→          voiceSpeed: config?.voiceSpeed || 1.0,
+   194→        }),
+   195→      });
+   196→
+   197→      const data = await res.json();
+   198→      if (data.success) {
+   199→        addLog('Pipeline started, processing in background...');
+   200→        setIsGenerating(true);
+   201→      } else {
+   202→        addLog(`❌ ${data.error}`);
+   203→        setIsGenerating(false);
+   204→        setProgress(0);
+   205→        setProgressLabel(`Failed: ${data.error}`);
+   206→      }
+   207→      fetchStatus();
+   208→    } catch (err: any) {
+   209→      addLog(`❌ Pipeline error: ${err.message}`);
+   210→      setIsGenerating(false);
+   211→    }
+   212→  };
+   213→
+   214→  const deleteVideo = async (id: string) => {
+   215→    await fetch(`/api/videos?id=${id}`, { method: 'DELETE' });
+   216→    fetchStatus();
+   217→    setSelectedVideo(null);
+   218→  };
+   219→
+   220→  const updateConfig = async (updates: Partial<Config>) => {
+   221→    if (!config) return;
+   222→    const res = await fetch('/api/config', {
+   223→      method: 'PUT',
+   224→      headers: { 'Content-Type': 'application/json' },
+   225→      body: JSON.stringify({ ...config, ...updates }),
+   226→    });
+   227→    const data = await res.json();
+   228→    setConfig(data);
+   229→  };
+   230→
+   231→  const getVideoFileUrl = (video: VideoItem, type: 'video' | 'voiceover') => {
+   232→    const filename = type === 'video' ? `${video.id}.mp4` : `${video.id}_voiceover.mp3`;
+   233→    return `/api/serve?file=${filename}`;
+   234→  };
+   235→
+   236→  const parseImages = (imagesJson: string): { url: string; caption?: string }[] => {
+   237→    try {
+   238→      return JSON.parse(imagesJson);
+   239→    } catch {
+   240→      return [];
+   241→    }
+   242→  };
+   243→
+   244→  return (
+   245→    <div className="min-h-screen bg-[#0a0a0f] text-white">
+   246→      {/* Ambient gradient background */}
+   247→      <div className="fixed inset-0 pointer-events-none">
+   248→        <div className="absolute top-0 left-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl" />
+   249→        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl" />
+   250→        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-emerald-500/5 rounded-full blur-3xl" />
+   251→      </div>
+   252→
+   253→      <div className="relative z-10">
+   254→        {/* Header */}
+   255→        <header className="border-b border-white/5 backdrop-blur-xl bg-black/20">
+   256→          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+   257→            <div className="flex items-center gap-3">
+   258→              <div className="relative">
+   259→                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-purple-500/20">
+   260→                  <Zap className="w-5 h-5 text-white" />
+   261→                </div>
+   262→                <div className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+   263→              </div>
+   264→              <div>
+   265→                <h1 className="text-lg font-bold tracking-tight">
+   266→                  AI Slop Farm
+   267→                </h1>
+   268→                <p className="text-xs text-white/40">YouTube Shorts Factory</p>
+   269→              </div>
+   270→            </div>
+   271→            <div className="flex items-center gap-3">
+   272→              <Badge
+   273→                variant="outline"
+   274→                className={
+   275→                  pipelineStatus?.status === 'running'
+   276→                    ? 'border-yellow-500/50 text-yellow-400 bg-yellow-500/10'
+   277→                    : 'border-emerald-500/50 text-emerald-400 bg-emerald-500/10'
+   278→                }
+   279→              >
+   280→                {pipelineStatus?.status === 'running' ? (
+   281→                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+   282→                ) : (
+   283→                  <CheckCircle2 className="w-3 h-3 mr-1" />
+   284→                )}
+   285→                {pipelineStatus?.status === 'running' ? 'Processing' : 'Idle'}
+   286→              </Badge>
+   287→              <Button
+   288→                variant="ghost"
+   289→                size="icon"
+   290→                className="text-white/60 hover:text-white hover:bg-white/10"
+   291→                onClick={() => setShowSettings(true)}
+   292→              >
+   293→                <Settings className="w-5 h-5" />
+   294→              </Button>
+   295→            </div>
+   296→          </div>
+   297→        </header>
+   298→
+   299→        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+   300→          {/* Stats Row */}
+   301→          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   302→            {[
+   303→              { label: 'Total Generated', value: pipelineStatus?.total || 0, icon: BarChart3, color: 'text-purple-400' },
+   304→              { label: 'Processing', value: pipelineStatus?.processing || 0, icon: Loader2, color: 'text-yellow-400' },
+   305→              { label: 'Completed', value: pipelineStatus?.completed || 0, icon: CheckCircle2, color: 'text-emerald-400' },
+   306→              { label: 'Failed', value: pipelineStatus?.failed || 0, icon: XCircle, color: 'text-red-400' },
+   307→            ].map((stat) => (
+   308→              <Card key={stat.label} className="bg-white/[0.03] border-white/[0.06] backdrop-blur-sm">
+   309→                <CardContent className="p-4">
+   310→                  <div className="flex items-center justify-between">
+   311→                    <div>
+   312→                      <p className="text-xs text-white/40">{stat.label}</p>
+   313→                      <p className={`text-2xl font-bold mt-1 ${stat.color}`}>{stat.value}</p>
+   314→                    </div>
+   315→                    <stat.icon className={`w-5 h-5 ${stat.color} opacity-50`} />
+   316→                  </div>
+   317→                </CardContent>
+   318→              </Card>
+   319→            ))}
+   320→          </div>
+   321→
+   322→          {/* Generate Section */}
+   323→          <Card className="bg-white/[0.03] border-white/[0.06] backdrop-blur-sm overflow-hidden">
+   324→            <CardContent className="p-0">
+   325→              {/* Progress bar at top when generating */}
+   326→              <AnimatePresence>
+   327→                {isGenerating && (
+   328→                  <motion.div
+   329→                    initial={{ height: 0, opacity: 0 }}
+   330→                    animate={{ height: 'auto', opacity: 1 }}
+   331→                    exit={{ height: 0, opacity: 0 }}
+   332→                  >
+   333→                    <div className="p-4 border-b border-white/[0.06] space-y-2">
+   334→                      <div className="flex items-center justify-between">
+   335→                        <div className="flex items-center gap-2">
+   336→                          <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+   337→                          <span className="text-sm text-white/70">{progressLabel}</span>
+   338→                        </div>
+   339→                        <span className="text-sm text-white/40">{progress}%</span>
+   340→                      </div>
+   341→                      <Progress value={progress} className="h-1.5 bg-white/10" />
+   342→                    </div>
+   343→                  </motion.div>
+   344→                )}
+   345→              </AnimatePresence>
+   346→
+   347→              <div className="p-6 space-y-4">
+   348→                <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4">
+   349→                  <div className="flex-1 space-y-2 w-full">
+   350→                    <Label className="text-white/60 text-xs uppercase tracking-wider">Topic (leave blank for auto)</Label>
+   351→                    <Input
+   352→                      placeholder="e.g., Google just released Gemini 2.5..."
+   353→                      value={customTopic}
+   354→                      onChange={(e) => setCustomTopic(e.target.value)}
+   355→                      className="bg-white/[0.05] border-white/[0.1] text-white placeholder:text-white/30 h-11"
+   356→                      onKeyDown={(e) => e.key === 'Enter' && !isGenerating && runPipeline(customTopic)}
+   357→                      disabled={isGenerating}
+   358→                    />
+   359→                  </div>
+   360→                  <Button
+   361→                    onClick={() => runPipeline(customTopic)}
+   362→                    disabled={isGenerating}
+   363→                    className="h-11 px-8 bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white font-semibold shadow-lg shadow-purple-500/20 hover:shadow-purple-500/30 transition-all"
+   364→                  >
+   365→                    {isGenerating ? (
+   366→                      <>
+   367→                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+   368→                        Generating...
+   369→                      </>
+   370→                    ) : (
+   371→                      <>
+   372→                        <Sparkles className="w-4 h-4 mr-2" />
+   373→                        Generate Short
+   374→                      </>
+   375→                    )}
+   376→                  </Button>
+   377→                </div>
+   378→              </div>
+   379→            </CardContent>
+   380→          </Card>
+   381→
+   382→          {/* Main Content: Videos + Logs */}
+   383→          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+   384→            {/* Video Queue */}
+   385→            <div className="lg:col-span-2 space-y-4">
+   386→              <div className="flex items-center justify-between">
+   387→                <h2 className="text-lg font-semibold flex items-center gap-2">
+   388→                  <Video className="w-5 h-5 text-purple-400" />
+   389→                  Video Queue
+   390→                </h2>
+   391→                <Tabs defaultValue="all" className="w-auto">
+   392→                  <TabsList className="bg-white/[0.05]">
+   393→                    <TabsTrigger value="all" className="text-white/60 data-[state=active]:text-white data-[state=active]:bg-white/10 text-xs px-3">All</TabsTrigger>
+   394→                    <TabsTrigger value="complete" className="text-white/60 data-[state=active]:text-white data-[state=active]:bg-white/10 text-xs px-3">Done</TabsTrigger>
+   395→                    <TabsTrigger value="failed" className="text-white/60 data-[state=active]:text-white data-[state=active]:bg-white/10 text-xs px-3">Failed</TabsTrigger>
+   396→                  </TabsList>
+   397→                </Tabs>
+   398→              </div>
+   399→
+   400→              {videos.length === 0 ? (
+   401→                <Card className="bg-white/[0.03] border-white/[0.06]">
+   402→                  <CardContent className="p-12 text-center">
+   403→                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white/[0.05] flex items-center justify-center">
+   404→                      <Film className="w-8 h-8 text-white/20" />
+   405→                    </div>
+   406→                    <h3 className="text-white/40 font-medium">No videos yet</h3>
+   407→                    <p className="text-white/20 text-sm mt-1">Hit &quot;Generate Short&quot; to start the farm</p>
+   408→                  </CardContent>
+   409→                </Card>
+   410→              ) : (
+   411→                <ScrollArea className="max-h-[600px]">
+   412→                  <div className="space-y-3 pr-4">
+   413→                    <AnimatePresence>
+   414→                      {videos.map((video, i) => {
+   415→                        const statusCfg = STATUS_CONFIG[video.status] || STATUS_CONFIG.draft;
+   416→                        const StatusIcon = statusCfg.icon;
+   417→                        const images = parseImages(video.images);
+   418→
+   419→                        return (
+   420→                          <motion.div
+   421→                            key={video.id}
+   422→                            initial={{ opacity: 0, y: 20 }}
+   423→                            animate={{ opacity: 1, y: 0 }}
+   424→                            exit={{ opacity: 0, y: -20 }}
+   425→                            transition={{ delay: i * 0.05 }}
+   426→                          >
+   427→                            <Card
+   428→                              className="bg-white/[0.03] border-white/[0.06] hover:bg-white/[0.05] hover:border-white/[0.1] transition-all cursor-pointer group"
+   429→                              onClick={() => setSelectedVideo(video)}
+   430→                            >
+   431→                              <CardContent className="p-4">
+   432→                                <div className="flex gap-4">
+   433→                                  {/* Thumbnail / Status */}
+   434→                                  <div className="flex-shrink-0">
+   435→                                    {images.length > 0 && video.status === 'complete' ? (
+   436→                                      <div className="w-20 h-28 rounded-lg overflow-hidden bg-white/[0.05] relative group/play">
+   437→                                        <img
+   438→                                          src={images[0].url}
+   439→                                          alt=""
+   440→                                          className="w-full h-full object-cover"
+   441→                                          onError={(e) => {
+   442→                                            (e.target as HTMLImageElement).style.display = 'none';
+   443→                                          }}
+   444→                                        />
+   445→                                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover/play:opacity-100 transition-opacity">
+   446→                                          <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center">
+   447→                                            <Play className="w-3.5 h-3.5 text-black ml-0.5" fill="black" />
+   448→                                          </div>
+   449→                                        </div>
+   450→                                        {video.duration && (
+   451→                                          <span className="absolute bottom-1 right-1 text-[9px] bg-black/70 text-white px-1 rounded">
+   452→                                            0:{video.duration.toString().padStart(2, '0')}
+   453→                                          </span>
+   454→                                        )}
+   455→                                      </div>
+   456→                                    ) : images.length > 0 ? (
+   457→                                      <div className="w-20 h-28 rounded-lg overflow-hidden bg-white/[0.05]">
+   458→                                        <img
+   459→                                          src={images[0].url}
+   460→                                          alt=""
+   461→                                          className="w-full h-full object-cover opacity-60"
+   462→                                          onError={(e) => {
+   463→                                            (e.target as HTMLImageElement).style.display = 'none';
+   464→                                          }}
+   465→                                        />
+   466→                                      </div>
+   467→                                    ) : (
+   468→                                      <div className="w-20 h-28 rounded-lg bg-white/[0.05] flex items-center justify-center">
+   469→                                        <StatusIcon className={`w-6 h-6 ${video.status === 'complete' ? 'text-emerald-400' : video.status === 'failed' ? 'text-red-400' : 'text-white/30'}`} />
+   470→                                      </div>
+   471→                                    )}
+   472→                                  </div>
+   473→
+   474→                                  {/* Info */}
+   475→                                  <div className="flex-1 min-w-0">
+   476→                                    <div className="flex items-start justify-between gap-2">
+   477→                                      <h3 className="font-medium text-sm line-clamp-1 group-hover:text-purple-400 transition-colors">
+   478→                                        {video.title}
+   479→                                      </h3>
+   480→                                      <Badge
+   481→                                        variant="outline"
+   482→                                        className={`text-[10px] px-1.5 py-0 flex-shrink-0 ${
+   483→                                          video.status === 'complete'
+   484→                                            ? 'border-emerald-500/50 text-emerald-400'
+   485→                                            : video.status === 'failed'
+   486→                                            ? 'border-red-500/50 text-red-400'
+   487→                                            : 'border-white/20 text-white/50'
+   488→                                        }`}
+   489→                                      >
+   490→                                        {statusCfg.label}
+   491→                                      </Badge>
+   492→                                    </div>
+   493→
+   494→                                    {video.hook && (
+   495→                                      <p className="text-xs text-white/40 mt-1 line-clamp-2 italic">
+   496→                                        &quot;{video.hook}&quot;
+   497→                                      </p>
+   498→                                    )}
+   499→
+   500→                                    {video.sourceTitle && (
+   501→                                      <p className="text-xs text-white/30 mt-1 line-clamp-1">
+   502→                                        Source: {video.sourceTitle}
+   503→                                      </p>
+   504→                                    )}
+   505→
+   506→                                    <div className="flex items-center gap-3 mt-2 text-[10px] text-white/30">
+   507→                                      <span className="flex items-center gap-1">
+   508→                                        <Clock className="w-3 h-3" />
+   509→                                        {video.duration ? `${video.duration}s` : '--'}
+   510→                                      </span>
+   511→                                      <span className="flex items-center gap-1">
+   512→                                        <Calendar className="w-3 h-3" />
+   513→                                        {new Date(video.createdAt).toLocaleDateString()}
+   514→                                      </span>
+   515→                                      {video.status === 'complete' && (
+   516→                                        <span className="flex items-center gap-1 text-emerald-400/60">
+   517→                                          <Eye className="w-3 h-3" />
+   518→                                          {video.views}
+   519→                                        </span>
+   520→                                      )}
+   521→                                    </div>
+   522→                                  </div>
+   523→                                </div>
+   524→                              </CardContent>
+   525→                            </Card>
+   526→                          </motion.div>
+   527→                        );
+   528→                      })}
+   529→                    </AnimatePresence>
+   530→                  </div>
+   531→                </ScrollArea>
+   532→              )}
+   533→            </div>
+   534→
+   535→            {/* Right Column: Pipeline Log + Quick Actions */}
+   536→            <div className="space-y-4">
+   537→              {/* Pipeline Steps Visual */}
+   538→              <Card className="bg-white/[0.03] border-white/[0.06]">
+   539→                <CardHeader className="pb-3">
+   540→                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+   541→                    <TrendingUp className="w-4 h-4 text-cyan-400" />
+   542→                    Pipeline Steps
+   543→                  </CardTitle>
+   544→                </CardHeader>
+   545→                <CardContent className="space-y-2">
+   546→                  {[
+   547→                    { label: 'Search AI News', icon: '🔍' },
+   548→                    { label: 'Write Script', icon: '✍️' },
+   549→                    { label: 'Get Screenshots', icon: '📸' },
+   550→                    { label: 'AI Voiceover', icon: '🎙️' },
+   551→                    { label: 'Assemble Video', icon: '🎬' },
+   552→                  ].map((step, i) => {
+   553→                    const stepProgress = progress / 100;
+   554→                    const isActive = isGenerating && stepProgress > i / 5 && stepProgress <= (i + 1) / 5;
+   555→                    const isDone = stepProgress > (i + 1) / 5;
+   556→
+   557→                    return (
+   558→                      <div
+   559→                        key={step.label}
+   560→                        className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
+   561→                          isActive
+   562→                            ? 'bg-purple-500/10 border border-purple-500/20'
+   563→                            : isDone
+   564→                            ? 'bg-emerald-500/5 border border-emerald-500/10'
+   565→                            : 'bg-white/[0.02] border border-transparent'
+   566→                        }`}
+   567→                      >
+   568→                        <span className="text-sm">{step.icon}</span>
+   569→                        <span className={`text-xs flex-1 ${isActive ? 'text-purple-300' : isDone ? 'text-emerald-300/70' : 'text-white/30'}`}>
+   570→                          {step.label}
+   571→                        </span>
+   572→                        {isActive && <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />}
+   573→                        {isDone && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+   574→                      </div>
+   575→                    );
+   576→                  })}
+   577→                </CardContent>
+   578→              </Card>
+   579→
+   580→              {/* Live Log */}
+   581→              <Card className="bg-white/[0.03] border-white/[0.06]">
+   582→                <CardHeader className="pb-3">
+   583→                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+   584→                    <FileText className="w-4 h-4 text-orange-400" />
+   585→                    Live Log
+   586→                  </CardTitle>
+   587→                </CardHeader>
+   588→                <CardContent>
+   589→                  <div className="bg-black/30 rounded-lg p-3 max-h-48 overflow-y-auto font-mono text-[10px] leading-relaxed">
+   590→                    {logs.length === 0 ? (
+   591→                      <p className="text-white/20">Waiting for pipeline to start...</p>
+   592→                    ) : (
+   593→                      logs.map((log, i) => (
+   594→                        <p key={i} className="text-white/50">{log}</p>
+   595→                      ))
+   596→                    )}
+   597→                  </div>
+   598→                </CardContent>
+   599→              </Card>
+   600→
+   601→              {/* Quick Actions */}
+   602→              <Card className="bg-white/[0.03] border-white/[0.06]">
+   603→                <CardHeader className="pb-3">
+   604→                  <CardTitle className="text-sm font-medium">Quick Actions</CardTitle>
+   605→                </CardHeader>
+   606→                <CardContent className="space-y-2">
+   607→                  <Button
+   608→                    variant="outline"
+   609→                    className="w-full justify-start text-white/60 border-white/10 hover:text-white hover:bg-white/5 h-9 text-xs"
+   610→                    onClick={() => runPipeline('OpenAI latest news')}
+   611→                    disabled={isGenerating}
+   612→                  >
+   613→                    <Zap className="w-3 h-3 mr-2 text-green-400" />
+   614→                    Quick: OpenAI News
+   615→                  </Button>
+   616→                  <Button
+   617→                    variant="outline"
+   618→                    className="w-full justify-start text-white/60 border-white/10 hover:text-white hover:bg-white/5 h-9 text-xs"
+   619→                    onClick={() => runPipeline('Google AI latest announcement')}
+   620→                    disabled={isGenerating}
+   621→                  >
+   622→                    <Zap className="w-3 h-3 mr-2 text-blue-400" />
+   623→                    Quick: Google AI News
+   624→                  </Button>
+   625→                  <Button
+   626→                    variant="outline"
+   627→                    className="w-full justify-start text-white/60 border-white/10 hover:text-white hover:bg-white/5 h-9 text-xs"
+   628→                    onClick={() => runPipeline('AI tools and apps trending')}
+   629→                    disabled={isGenerating}
+   630→                  >
+   631→                    <Zap className="w-3 h-3 mr-2 text-purple-400" />
+   632→                    Quick: AI Tools Trending
+   633→                  </Button>
+   634→                </CardContent>
+   635→              </Card>
+   636→            </div>
+   637→          </div>
+   638→        </main>
+   639→      </div>
+   640→
+   641→      {/* Video Detail Dialog */}
+   642→      <Dialog open={!!selectedVideo} onOpenChange={() => setSelectedVideo(null)}>
+   643→        <DialogContent className="max-w-4xl bg-[#12121a] border-white/[0.08] text-white max-h-[90vh] overflow-y-auto">
+   644→          {selectedVideo && (
+   645→            <>
+   646→              <DialogHeader>
+   647→                <DialogTitle className="flex items-center gap-2">
+   648→                  {selectedVideo.title}
+   649→                  <Badge
+   650→                    variant="outline"
+   651→                    className={
+   652→                      selectedVideo.status === 'complete'
+   653→                        ? 'border-emerald-500/50 text-emerald-400'
+   654→                        : 'border-white/20 text-white/50'
+   655→                    }
+   656→                  >
+   657→                    {STATUS_CONFIG[selectedVideo.status]?.label}
+   658→                  </Badge>
+   659→                </DialogTitle>
+   660→                <DialogDescription className="text-white/40">
+   661→                  Created {new Date(selectedVideo.createdAt).toLocaleString()}
+   662→                </DialogDescription>
+   663→              </DialogHeader>
+   664→
+   665→              <div className="mt-4 flex flex-col md:flex-row gap-6">
+   666→                {/* Left: Video Player */}
+   667→                <div className="flex-shrink-0 flex flex-col items-center gap-3">
+   668→                  {selectedVideo.status === 'complete' && selectedVideo.videoUrl ? (
+   669→                    <div className="relative w-[240px] h-[426px] sm:w-[270px] sm:h-[480px] bg-black rounded-2xl overflow-hidden shadow-2xl shadow-black/50 border border-white/10">
+   670→                      <video
+   671→                        key={selectedVideo.id}
+   672→                        src={getVideoFileUrl(selectedVideo, 'video')}
+   673→                        controls
+   674→                        playsInline
+   675→                        loop
+   676→                        className="w-full h-full object-contain"
+   677→                      />
+   678→                      {/* Gradient overlays for Shorts feel */}
+   679→                      <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
+   680→                      <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/60 to-transparent pointer-events-none" />
+   681→                      {/* Title overlay */}
+   682→                      <div className="absolute bottom-2.5 left-2.5 right-2.5 pointer-events-none">
+   683→                        <p className="text-white text-[11px] font-semibold drop-shadow-lg line-clamp-2">{selectedVideo.title}</p>
+   684→                      </div>
+   685→                      {/* Duration badge */}
+   686→                      {selectedVideo.duration && (
+   687→                        <div className="absolute top-2.5 right-2.5 bg-black/60 backdrop-blur-sm rounded px-1.5 py-0.5">
+   688→                          <span className="text-white text-[10px] font-medium">
+   689→                            0:{selectedVideo.duration.toString().padStart(2, '0')}
+   690→                          </span>
+   691→                        </div>
+   692→                      )}
+   693→                    </div>
+   694→                  ) : selectedVideo.status === 'failed' ? (
+   695→                    <div className="w-[270px] h-[480px] bg-red-500/5 border border-red-500/10 rounded-2xl flex flex-col items-center justify-center gap-3">
+   696→                      <XCircle className="w-12 h-12 text-red-400/50" />
+   697→                      <p className="text-red-300/60 text-sm text-center px-4">Generation Failed</p>
+   698→                      {selectedVideo.error && (
+   699→                        <p className="text-red-200/40 text-xs text-center px-6">{selectedVideo.error}</p>
+   700→                      )}
+   701→                    </div>
+   702→                  ) : (
+   703→                    <div className="w-[270px] h-[480px] bg-white/[0.02] border border-white/5 rounded-2xl flex flex-col items-center justify-center gap-3">
+   704→                      <Loader2 className="w-10 h-10 text-purple-400/50 animate-spin" />
+   705→                      <p className="text-white/30 text-sm">
+   706→                        {STATUS_CONFIG[selectedVideo.status]?.label || 'Processing...'}
+   707→                      </p>
+   708→                    </div>
+   709→                  )}
+   710→
+   711→                  {/* Action buttons below player */}
+   712→                  <div className="flex gap-2">
+   713→                    {selectedVideo.videoUrl && (
+   714→                      <Button
+   715→                        size="sm"
+   716→                        className="bg-emerald-600 hover:bg-emerald-500 h-8 text-xs"
+   717→                        onClick={(e) => {
+   718→                          e.stopPropagation();
+   719→                          window.open(getVideoFileUrl(selectedVideo!, 'video'), '_blank');
+   720→                        }}
+   721→                      >
+   722→                        <Download className="w-3 h-3 mr-1" />
+   723→                        MP4
+   724→                      </Button>
+   725→                    )}
+   726→                    {selectedVideo.voiceoverUrl && (
+   727→                      <Button
+   728→                        size="sm"
+   729→                        variant="outline"
+   730→                        className="border-white/10 text-white/70 h-8 text-xs"
+   731→                        onClick={(e) => {
+   732→                          e.stopPropagation();
+   733→                          window.open(getVideoFileUrl(selectedVideo!, 'voiceover'), '_blank');
+   734→                        }}
+   735→                      >
+   736→                        <Volume2 className="w-3 h-3 mr-1" />
+   737→                        Audio
+   738→                      </Button>
+   739→                    )}
+   740→                    {selectedVideo.sourceUrl && (
+   741→                      <Button
+   742→                        size="sm"
+   743→                        variant="outline"
+   744→                        className="border-white/10 text-white/70 h-8 text-xs"
+   745→                        onClick={(e) => {
+   746→                          e.stopPropagation();
+   747→                          window.open(selectedVideo.sourceUrl, '_blank');
+   748→                        }}
+   749→                      >
+   750→                        <ExternalLink className="w-3 h-3 mr-1" />
+   751→                        Source
+   752→                      </Button>
+   753→                    )}
+   754→                  </div>
+   755→                </div>
+   756→
+   757→                {/* Right: Details */}
+   758→                <div className="flex-1 min-w-0 space-y-3">
+   759→                  {/* Hook */}
+   760→                  {selectedVideo.hook && (
+   761→                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3">
+   762→                      <p className="text-[10px] text-purple-300/60 uppercase tracking-wider mb-1">Hook</p>
+   763→                      <p className="text-sm text-purple-200 italic">&quot;{selectedVideo.hook}&quot;</p>
+   764→                    </div>
+   765→                  )}
+   766→
+   767→                  {/* Script */}
+   768→                  {selectedVideo.script && (
+   769→                    <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-3">
+   770→                      <p className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Script</p>
+   771→                      <ScrollArea className="max-h-40">
+   772→                        <p className="text-sm text-white/70 whitespace-pre-wrap leading-relaxed pr-2">{selectedVideo.script}</p>
+   773→                      </ScrollArea>
+   774→                    </div>
+   775→                  )}
+   776→
+   777→                  {/* Images */}
+   778→                  {parseImages(selectedVideo.images).length > 0 && (
+   779→                    <div>
+   780→                      <p className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Screenshots Used ({parseImages(selectedVideo.images).length})</p>
+   781→                      <div className="grid grid-cols-3 gap-1.5">
+   782→                        {parseImages(selectedVideo.images).map((img, i) => (
+   783→                          <div key={i} className="aspect-video bg-white/[0.05] rounded-md overflow-hidden">
+   784→                            <img src={img.url} alt={img.caption || ''} className="w-full h-full object-cover" />
+   785→                          </div>
+   786→                        ))}
+   787→                      </div>
+   788→                    </div>
+   789→                  )}
+   790→
+   791→                  {/* Meta info */}
+   792→                  <div className="flex items-center gap-4 text-[10px] text-white/30 pt-1">
+   793→                    <span className="flex items-center gap-1">
+   794→                      <Clock className="w-3 h-3" />
+   795→                      {selectedVideo.duration ? `${selectedVideo.duration}s` : '--'}
+   796→                    </span>
+   797→                    <span>{new Date(selectedVideo.createdAt).toLocaleString()}</span>
+   798→                    {!selectedVideo.voiceoverUrl && selectedVideo.status === 'complete' && (
+   799→                      <span className="text-yellow-400/50 flex items-center gap-1">
+   800→                        <Volume2 className="w-3 h-3" />
+   801→                        No audio (TTS rate limited)
+   802→                      </span>
+   803→                    )}
+   804→                  </div>
+   805→
+   806→                  {/* Delete */}
+   807→                  <div className="pt-2">
+   808→                    <Button
+   809→                      size="sm"
+   810→                      variant="outline"
+   811→                      className="border-red-500/20 text-red-400 hover:bg-red-500/10 h-8 text-xs"
+   812→                      onClick={(e) => {
+   813→                        e.stopPropagation();
+   814→                        deleteVideo(selectedVideo.id);
+   815→                      }}
+   816→                    >
+   817→                      <Trash2 className="w-3 h-3 mr-1" />
+   818→                      Delete
+   819→                    </Button>
+   820→                  </div>
+   821→                </div>
+   822→              </div>
+   823→            </>
+   824→          )}
+   825→        </DialogContent>
+   826→      </Dialog>
+   827→
+   828→      {/* Settings Dialog */}
+   829→      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+   830→        <DialogContent className="max-w-md bg-[#12121a] border-white/[0.08] text-white">
+   831→          <DialogHeader>
+   832→            <DialogTitle className="flex items-center gap-2">
+   833→              <Settings className="w-5 h-5" />
+   834→              Pipeline Settings
+   835→            </DialogTitle>
+   836→            <DialogDescription>Configure your AI content farm</DialogDescription>
+   837→          </DialogHeader>
+   838→
+   839→          {config && (
+   840→            <div className="space-y-4 mt-4">
+   841→              {/* Auto Generate */}
+   842→              <div className="flex items-center justify-between">
+   843→                <div>
+   844→                  <Label className="text-white/80 text-sm">Auto-Generate</Label>
+   845→                  <p className="text-xs text-white/40 mt-0.5">Automatically create videos on schedule</p>
+   846→                </div>
+   847→                <Switch
+   848→                  checked={config.autoGenerate}
+   849→                  onCheckedChange={(v) => updateConfig({ autoGenerate: v })}
+   850→                />
+   851→              </div>
+   852→
+   853→              <Separator className="bg-white/[0.06]" />
+   854→
+   855→              {/* Interval */}
+   856→              <div className="space-y-2">
+   857→                <Label className="text-white/60 text-xs uppercase tracking-wider">Interval (minutes)</Label>
+   858→                <Input
+   859→                  type="number"
+   860→                  value={config.intervalMinutes}
+   861→                  onChange={(e) => updateConfig({ intervalMinutes: parseInt(e.target.value) || 60 })}
+   862→                  className="bg-white/[0.05] border-white/[0.1] text-white"
+   863→                />
+   864→              </div>
+   865→
+   866→              {/* Voice */}
+   867→              <div className="space-y-2">
+   868→                <Label className="text-white/60 text-xs uppercase tracking-wider">Voice</Label>
+   869→                <Select value={config.voiceName} onValueChange={(v) => updateConfig({ voiceName: v })}>
+   870→                  <SelectTrigger className="bg-white/[0.05] border-white/[0.1] text-white">
+   871→                    <SelectValue />
+   872→                  </SelectTrigger>
+   873→                  <SelectContent className="bg-[#1a1a2e] border-white/10">
+   874→                    <SelectItem value="tongtong">Tongtong (Warm)</SelectItem>
+   875→                    <SelectItem value="chuichui">Chuichui (Cute)</SelectItem>
+   876→                    <SelectItem value="xiaochen">Xiaochen (Pro)</SelectItem>
+   877→                    <SelectItem value="jam">Jam (British)</SelectItem>
+   878→                    <SelectItem value="kazi">Kazi (Standard)</SelectItem>
+   879→                    <SelectItem value="douji">Douji (Natural)</SelectItem>
+   880→                    <SelectItem value="luodo">Luodo (Expressive)</SelectItem>
+   881→                  </SelectContent>
+   882→                </Select>
+   883→              </div>
+   884→
+   885→              {/* Speed */}
+   886→              <div className="space-y-2">
+   887→                <Label className="text-white/60 text-xs uppercase tracking-wider">
+   888→                  Voice Speed: {config.voiceSpeed.toFixed(1)}x
+   889→                </Label>
+   890→                <Input
+   891→                  type="range"
+   892→                  min="0.5"
+   893→                  max="2.0"
+   894→                  step="0.1"
+   895→                  value={config.voiceSpeed}
+   896→                  onChange={(e) => updateConfig({ voiceSpeed: parseFloat(e.target.value) })}
+   897→                  className="bg-white/[0.05] border-white/[0.1] accent-purple-500"
+   898→                />
+   899→              </div>
+   900→
+   901→              {/* Target Duration */}
+   902→              <div className="space-y-2">
+   903→                <Label className="text-white/60 text-xs uppercase tracking-wider">Target Duration (seconds)</Label>
+   904→                <Input
+   905→                  type="number"
+   906→                  value={config.targetDuration}
+   907→                  onChange={(e) => updateConfig({ targetDuration: parseInt(e.target.value) || 60 })}
+   908→                  className="bg-white/[0.05] border-white/[0.1] text-white"
+   909→                />
+   910→              </div>
+   911→
+   912→              {/* Niches */}
+   913→              <div className="space-y-2">
+   914→                <Label className="text-white/60 text-xs uppercase tracking-wider">
+   915→                  Niches (comma-separated)
+   916→                </Label>
+   917→                <textarea
+   918→                  value={config.niches}
+   919→                  onChange={(e) => updateConfig({ niches: e.target.value })}
+   920→                  rows={3}
+   921→                  className="w-full bg-white/[0.05] border border-white/[0.1] rounded-lg text-white text-sm p-3 focus:outline-none focus:ring-1 focus:ring-purple-500"
+   922→                />
+   923→              </div>
+   924→            </div>
+   925→          )}
+   926→        </DialogContent>
+   927→      </Dialog>
+   928→    </div>
+   929→  );
+   930→}
+   931→

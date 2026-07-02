@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Video {
+  id          String   @id @default(cuid())
+  title       String
+  hook        String
+  script      String
+  voiceoverUrl String?
+  voiceoverPath String?
+  thumbnailUrl String?
+  thumbnailPath String?
+  images      String   // JSON array of image URLs
+  videoUrl    String?
+  videoPath   String?
+  status      String   @default("draft") // draft, generating_script, generating_voiceover, capturing_screenshots, assembling, complete, failed
+  sourceUrl   String?
+  sourceTitle String?
+  sourceSnippet String?
+  error       String?
+  duration    Int?     // seconds
+  views       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PipelineConfig {
+  id              String   @id @default(cuid())
+  autoGenerate    Boolean  @default(false)
+  intervalMinutes Int      @default(60)
+  voiceName       String   @default("alloy")
+  voiceSpeed      Float    @default(1.0)
+  targetDuration  Int      @default(60) // seconds for YouTube Shorts
+  niches          String   @default("AI,artificial intelligence,machine learning,LLM,ChatGPT,OpenAI,Google AI,Anthropic,Midjourney,Stable Diffusion")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

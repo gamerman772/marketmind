@@ -1,0 +1,1097 @@
+     1→'use client';
+     2→
+     3→import { useState, useCallback, useEffect, useRef } from 'react';
+     4→import {
+     5→  Wand2, FolderOpen, Palette, Bot, Mic, Music, Sparkles, Layout, Download, Settings,
+     6→  Play, Pause, SkipBack, Volume2, VolumeX, Maximize, ChevronLeft, ChevronRight,
+     7→  Plus, Trash2, Copy, Undo2, Redo2, ZoomIn, ZoomOut, Image, Type, Film,
+     8→  Loader2, CheckCircle2, XCircle, AlertCircle, Send, GripVertical, Eye, EyeOff,
+     9→  ChevronDown, RotateCcw, Shuffle,
+    10→} from 'lucide-react';
+    11→import { Button } from '@/components/ui/button';
+    12→import { Input } from '@/components/ui/input';
+    13→import { Label } from '@/components/ui/label';
+    14→import { Textarea } from '@/components/ui/textarea';
+    15→import { Slider } from '@/components/ui/slider';
+    16→import { Switch } from '@/components/ui/switch';
+    17→import { ScrollArea } from '@/components/ui/scroll-area';
+    18→import { Separator } from '@/components/ui/separator';
+    19→import { Badge } from '@/components/ui/badge';
+    20→import {
+    21→  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+    22→} from '@/components/ui/dialog';
+    23→import {
+    24→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    25→} from '@/components/ui/select';
+    26→import {
+    27→  Project, Scene, TimelineClip, TrackType,
+    28→  SIDEBAR_TOOLS, VOICE_OPTIONS, CAMERA_OPTIONS, TRANSITION_OPTIONS,
+    29→  TEXT_ANIMATIONS, TONE_OPTIONS, CATEGORY_OPTIONS,
+    30→  createEmptyScene, createDefaultProject,
+    31→} from '@/lib/ad-builder-types';
+    32→
+    33→// ─── ICON MAP ──────────────────────────────────────────────────────
+    34→const ICON_MAP: Record<string, React.ElementType> = {
+    35→  Wand2, FolderOpen, Palette, Bot, Mic, Music, Sparkles, Layout, Download, Settings,
+    36→};
+    37→
+    38→// ─── TRACK CONFIG ──────────────────────────────────────────────────
+    39→const TRACKS: { type: TrackType; label: string; color: string; height: number }[] = [
+    40→  { type: 'image', label: 'Images', color: 'bg-violet-500/60', height: 56 },
+    41→  { type: 'video', label: 'Video', color: 'bg-blue-500/60', height: 56 },
+    42→  { type: 'text', label: 'Text', color: 'bg-amber-500/60', height: 40 },
+    43→  { type: 'voice', label: 'Voice', color: 'bg-emerald-500/60', height: 40 },
+    44→  { type: 'music', label: 'Music', color: 'bg-pink-500/60', height: 36 },
+    45→  { type: 'sfx', label: 'SFX', color: 'bg-orange-500/60', height: 36 },
+    46→];
+    47→
+    48→const PIXELS_PER_SECOND = 60; // timeline scale
+    49→
+    50→export default function AdBuilderPage() {
+    51→  // ─── STATE ───────────────────────────────────────────────────────
+    52→  const [project, setProject] = useState<Project>(createDefaultProject);
+    53→  const [activeTool, setActiveTool] = useState('generate');
+    54→  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+    55→  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+    56→  const [timelineZoom, setTimelineZoom] = useState(1);
+    57→  const [isPlaying, setIsPlaying] = useState(false);
+    58→  const [playheadTime, setPlayheadTime] = useState(0);
+    59→  const [isMuted, setIsMuted] = useState(false);
+    60→  const [showSceneDialog, setShowSceneDialog] = useState(false);
+    61→  const [editingScene, setEditingScene] = useState<Scene | null>(null);
+    62→  const [showNewProjectDialog, setShowNewProjectDialog] = useState(true);
+    63→  const [aiPrompt, setAiPrompt] = useState('');
+    64→  const [aiLoading, setAiLoading] = useState(false);
+    65→  const [isExporting, setIsExporting] = useState(false);
+    66→  const [exportStatus, setExportStatus] = useState('');
+    67→  const [logs, setLogs] = useState<string[]>([]);
+    68→  const [undoStack, setUndoStack] = useState<Project[]>([]);
+    69→  const [redoStack, setRedoStack] = useState<Project[]>([]);
+    70→  const [generatingImageSceneId, setGeneratingImageSceneId] = useState<string | null>(null);
+    71→  const [generatingVoiceSceneId, setGeneratingVoiceSceneId] = useState<string | null>(null);
+    72→
+    73→  const playIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    74→  const timelineRef = useRef<HTMLDivElement>(null);
+    75→
+    76→  const addLog = useCallback((msg: string) => {
+    77→    setLogs(prev => [...prev.slice(-50), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    78→  }, []);
+    79→
+    80→  // Total project duration
+    81→  const totalDuration = project.scenes.reduce((sum, s) => sum + s.duration, 0);
+    82→
+    83→  // Selected scene
+    84→  const selectedScene = project.scenes.find(s => s.id === selectedSceneId) || null;
+    85→
+    86→  // ─── UNDO/REDO ───────────────────────────────────────────────────
+    87→  const pushUndo = useCallback(() => {
+    88→    setUndoStack(prev => [...prev.slice(-20), JSON.parse(JSON.stringify(project))]);
+    89→    setRedoStack([]);
+    90→  }, [project]);
+    91→
+    92→  const undo = useCallback(() => {
+    93→    if (undoStack.length === 0) return;
+    94→    const prev = undoStack[undoStack.length - 1];
+    95→    setRedoStack(r => [...r, JSON.parse(JSON.stringify(project))]);
+    96→    setProject(prev);
+    97→    setUndoStack(u => u.slice(0, -1));
+    98→  }, [undoStack, project]);
+    99→
+   100→  const redo = useCallback(() => {
+   101→    if (redoStack.length === 0) return;
+   102→    const next = redoStack[redoStack.length - 1];
+   103→    setUndoStack(u => [...u, JSON.parse(JSON.stringify(project))]);
+   104→    setProject(next);
+   105→    setRedoStack(r => r.slice(0, -1));
+   106→  }, [redoStack, project]);
+   107→
+   108→  useEffect(() => {
+   109→    const handler = (e: KeyboardEvent) => {
+   110→      if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); undo(); }
+   111→      if ((e.metaKey || e.ctrlKey) && e.key === 'y') { e.preventDefault(); redo(); }
+   112→    };
+   113→    window.addEventListener('keydown', handler);
+   114→    return () => window.removeEventListener('keydown', handler);
+   115→  }, [undo, redo]);
+   116→
+   117→  // ─── PROJECT UPDATES ─────────────────────────────────────────────
+   118→  const updateProject = useCallback((updates: Partial<Project>) => {
+   119→    pushUndo();
+   120→    setProject(p => ({ ...p, ...updates, updatedAt: new Date().toISOString() }));
+   121→  }, [pushUndo]);
+   122→
+   123→  const updateScene = useCallback((sceneId: string, updates: Partial<Scene>) => {
+   124→    pushUndo();
+   125→    setProject(p => ({
+   126→      ...p,
+   127→      scenes: p.scenes.map(s => s.id === sceneId ? { ...s, ...updates } : s),
+   128→      updatedAt: new Date().toISOString(),
+   129→    }));
+   130→  }, [pushUndo]);
+   131→
+   132→  // ─── SCENE MANAGEMENT ────────────────────────────────────────────
+   133→  const addScene = useCallback(() => {
+   134→    pushUndo();
+   135→    setProject(p => {
+   136→      const newScene = createEmptyScene(p.scenes.length);
+   137→      return { ...p, scenes: [...p.scenes, newScene], updatedAt: new Date().toISOString() };
+   138→    });
+   139→  }, [pushUndo]);
+   140→
+   141→  const duplicateScene = useCallback((sceneId: string) => {
+   142→    pushUndo();
+   143→    setProject(p => {
+   144→      const src = p.scenes.find(s => s.id === sceneId);
+   145→      if (!src) return p;
+   146→      const dup: Scene = { ...src, id: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, imageUrl: src.imageUrl, voiceUrl: undefined };
+   147→      const idx = p.scenes.findIndex(s => s.id === sceneId);
+   148→      const scenes = [...p.scenes];
+   149→      scenes.splice(idx + 1, 0, dup);
+   150→      return { ...p, scenes, updatedAt: new Date().toISOString() };
+   151→    });
+   152→  }, [pushUndo]);
+   153→
+   154→  const deleteScene = useCallback((sceneId: string) => {
+   155→    pushUndo();
+   156→    setProject(p => ({
+   157→      ...p,
+   158→      scenes: p.scenes.filter(s => s.id !== sceneId),
+   159→      updatedAt: new Date().toISOString(),
+   160→    }));
+   161→    if (selectedSceneId === sceneId) setSelectedSceneId(null);
+   162→  }, [pushUndo, selectedSceneId]);
+   163→
+   164→  const moveScene = useCallback((sceneId: string, dir: -1 | 1) => {
+   165→    pushUndo();
+   166→    setProject(p => {
+   167→      const idx = p.scenes.findIndex(s => s.id === sceneId);
+   168→      if (idx < 0) return p;
+   169→      const newIdx = idx + dir;
+   170→      if (newIdx < 0 || newIdx >= p.scenes.length) return p;
+   171→      const scenes = [...p.scenes];
+   172→      [scenes[idx], scenes[newIdx]] = [scenes[newIdx], scenes[idx]];
+   173→      return { ...p, scenes, updatedAt: new Date().toISOString() };
+   174→    });
+   175→  }, [pushUndo]);
+   176→
+   177→  // ─── AI IMAGE GENERATION ─────────────────────────────────────────
+   178→  const generateImage = useCallback(async (sceneId: string) => {
+   179→    const scene = project.scenes.find(s => s.id === sceneId);
+   180→    if (!scene || !scene.imagePrompt) return;
+   181→    setGeneratingImageSceneId(sceneId);
+   182→    updateScene(sceneId, { imageGenerating: true });
+   183→    try {
+   184→      const res = await fetch('/api/ad-builder/generate-image', {
+   185→        method: 'POST',
+   186→        headers: { 'Content-Type': 'application/json' },
+   187→        body: JSON.stringify({ prompt: scene.imagePrompt, sceneId }),
+   188→      });
+   189→      const data = await res.json();
+   190→      if (data.success) {
+   191→        updateScene(sceneId, { imageUrl: data.imageUrl, imageGenerating: false });
+   192→        addLog(`Image generated for scene ${project.scenes.findIndex(s => s.id === sceneId) + 1}`);
+   193→      } else {
+   194→        updateScene(sceneId, { imageGenerating: false });
+   195→        addLog(`Image gen failed: ${data.error}`);
+   196→      }
+   197→    } catch (err: any) {
+   198→      updateScene(sceneId, { imageGenerating: false });
+   199→      addLog(`Image gen error: ${err.message}`);
+   200→    }
+   201→    setGeneratingImageSceneId(null);
+   202→  }, [project.scenes, updateScene, addLog]);
+   203→
+   204→  // ─── AI VOICE GENERATION ─────────────────────────────────────────
+   205→  const generateVoice = useCallback(async (sceneId: string) => {
+   206→    const scene = project.scenes.find(s => s.id === sceneId);
+   207→    if (!scene || !scene.voiceScript) return;
+   208→    setGeneratingVoiceSceneId(sceneId);
+   209→    updateScene(sceneId, { voiceGenerating: true });
+   210→    try {
+   211→      const res = await fetch('/api/ad-builder/generate-voice', {
+   212→        method: 'POST',
+   213→        headers: { 'Content-Type': 'application/json' },
+   214→        body: JSON.stringify({ text: scene.voiceScript, sceneId, voice: 'jam', speed: scene.speed }),
+   215→      });
+   216→      const data = await res.json();
+   217→      if (data.success) {
+   218→        updateScene(sceneId, { voiceUrl: data.voiceUrl, voiceGenerating: false });
+   219→        addLog(`Voice generated for scene ${project.scenes.findIndex(s => s.id === sceneId) + 1}`);
+   220→      } else {
+   221→        updateScene(sceneId, { voiceGenerating: false });
+   222→        addLog(`Voice gen failed: ${data.error}`);
+   223→      }
+   224→    } catch (err: any) {
+   225→      updateScene(sceneId, { voiceGenerating: false });
+   226→      addLog(`Voice gen error: ${err.message}`);
+   227→    }
+   228→    setGeneratingVoiceSceneId(null);
+   229→  }, [project.scenes, updateScene, addLog]);
+   230→
+   231→  // ─── AI GENERATE FULL AD ─────────────────────────────────────────
+   232→  const generateFullAd = useCallback(async () => {
+   233→    setAiLoading(true);
+   234→    addLog('AI generating full ad...');
+   235→    try {
+   236→      const res = await fetch('/api/ad-builder/generate-ad', {
+   237→        method: 'POST',
+   238→        headers: { 'Content-Type': 'application/json' },
+   239→        body: JSON.stringify({
+   240→          product: project.product,
+   241→          category: project.category,
+   242→          targetAudience: project.targetAudience,
+   243→          keySellingPoint: project.keySellingPoint,
+   244→          brandColors: project.brandColors,
+   245→          visualStyle: project.visualStyle,
+   246→          tone: project.tone,
+   247→          targetDuration: project.targetDuration,
+   248→          aiFreedom: project.aiFreedom,
+   249→          creativeDirection: aiPrompt,
+   250→        }),
+   251→      });
+   252→      const data = await res.json();
+   253→      if (data.success && data.scenes) {
+   254→        pushUndo();
+   255→        setProject(p => ({ ...p, scenes: data.scenes, updatedAt: new Date().toISOString() }));
+   256→        addLog(`AI created ${data.scenes.length} scenes`);
+   257→        // Auto-select first scene
+   258→        setSelectedSceneId(data.scenes[0]?.id || null);
+   259→      } else {
+   260→        addLog(`AI generation failed: ${data.error}`);
+   261→      }
+   262→    } catch (err: any) {
+   263→      addLog(`AI error: ${err.message}`);
+   264→    }
+   265→    setAiLoading(false);
+   266→  }, [project, aiPrompt, pushUndo, addLog]);
+   267→
+   268→  // ─── EXPORT ──────────────────────────────────────────────────────
+   269→  const exportVideo = useCallback(async () => {
+   270→    setIsExporting(true);
+   271→    setExportStatus('Rendering scenes...');
+   272→    addLog('Starting export...');
+   273→    try {
+   274→      const res = await fetch('/api/ad-builder/export', {
+   275→        method: 'POST',
+   276→        headers: { 'Content-Type': 'application/json' },
+   277→        body: JSON.stringify({ project }),
+   278→      });
+   279→      const data = await res.json();
+   280→      if (data.success) {
+   281→        setExportStatus('Complete!');
+   282→        addLog(`Export done: ${data.videoUrl}`);
+   283→        // Open the video
+   284→        window.open(data.videoUrl, '_blank');
+   285→      } else {
+   286→        setExportStatus(`Failed: ${data.error}`);
+   287→        addLog(`Export failed: ${data.error}`);
+   288→      }
+   289→    } catch (err: any) {
+   290→      setExportStatus(`Error: ${err.message}`);
+   291→      addLog(`Export error: ${err.message}`);
+   292→    }
+   293→    setIsExporting(false);
+   294→  }, [project, addLog]);
+   295→
+   296→  // ─── PLAYBACK ────────────────────────────────────────────────────
+   297→  useEffect(() => {
+   298→    if (isPlaying) {
+   299→      playIntervalRef.current = setInterval(() => {
+   300→        setPlayheadTime(t => {
+   301→          if (t >= totalDuration) { setIsPlaying(false); return 0; }
+   302→          return t + 0.1;
+   303→        });
+   304→      }, 100);
+   305→    }
+   306→    return () => { if (playIntervalRef.current) clearInterval(playIntervalRef.current); };
+   307→  }, [isPlaying, totalDuration]);
+   308→
+   309→  // Current scene at playhead
+   310→  const currentSceneAtPlayhead = (() => {
+   311→    let t = 0;
+   312→    for (const scene of project.scenes) {
+   313→      if (playheadTime >= t && playheadTime < t + scene.duration) return scene;
+   314→      t += scene.duration;
+   315→    }
+   316→    return project.scenes[project.scenes.length - 1] || null;
+   317→  })();
+   318→
+   319→  // ─── COMPUTE SCENE START TIMES ───────────────────────────────────
+   320→  const sceneStartTimes = project.scenes.reduce((acc, s, i) => {
+   321→    acc[s.id] = project.scenes.slice(0, i).reduce((sum, prev) => sum + prev.duration, 0);
+   322→    return acc;
+   323→  }, {} as Record<string, number>);
+   324→
+   325→  // ─── NEW PROJECT DIALOG ──────────────────────────────────────────
+   326→  if (showNewProjectDialog) {
+   327→    return <NewProjectDialog onSubmit={(p) => { setProject({ ...createDefaultProject(), ...p }); setShowNewProjectDialog(false); addLog('New project created'); }} />;
+   328→  }
+   329→
+   330→  // ─── RENDER ──────────────────────────────────────────────────────
+   331→  return (
+   332→    <div className="h-screen flex flex-col bg-[#0c0c0f] text-zinc-100 overflow-hidden">
+   333→      {/* Top Bar */}
+   334→      <div className="h-11 border-b border-zinc-800/60 bg-zinc-950/80 backdrop-blur flex items-center justify-between px-3 flex-shrink-0">
+   335→        <div className="flex items-center gap-3">
+   336→          <Button variant="ghost" size="sm" className="text-zinc-500 hover:text-zinc-300 h-7 px-2" onClick={() => window.location.href = '/'}>
+   337→            <ChevronLeft className="w-4 h-4 mr-1" /> Back
+   338→          </Button>
+   339→          <Separator orientation="vertical" className="h-5 bg-zinc-800" />
+   340→          <div className="flex items-center gap-2">
+   341→            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-violet-500 to-amber-500 flex items-center justify-center">
+   342→              <Wand2 className="w-3 h-3 text-white" />
+   343→            </div>
+   344→            <span className="text-xs font-semibold">MarketMind AI</span>
+   345→          </div>
+   346→          <Separator orientation="vertical" className="h-5 bg-zinc-800" />
+   347→          <Input
+   348→            value={project.name}
+   349→            onChange={e => updateProject({ name: e.target.value })}
+   350→            className="h-7 w-48 bg-transparent border-none text-sm font-medium text-zinc-300 focus-visible:ring-0 px-1"
+   351→          />
+   352→        </div>
+   353→        <div className="flex items-center gap-1">
+   354→          <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-zinc-300" onClick={undo} disabled={undoStack.length === 0}>
+   355→            <Undo2 className="w-3.5 h-3.5" />
+   356→          </Button>
+   357→          <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-zinc-300" onClick={redo} disabled={redoStack.length === 0}>
+   358→            <Redo2 className="w-3.5 h-3.5" />
+   359→          </Button>
+   360→          <Separator orientation="vertical" className="h-5 bg-zinc-800 mx-1" />
+   361→          <Button
+   362→            size="sm"
+   363→            className="h-7 px-4 bg-gradient-to-r from-violet-600 to-amber-500 hover:from-violet-500 hover:to-amber-400 text-white text-xs font-semibold"
+   364→            onClick={exportVideo}
+   365→            disabled={isExporting || project.scenes.length === 0}
+   366→          >
+   367→            {isExporting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {exportStatus}</> : <><Download className="w-3 h-3 mr-1.5" /> Export</>}
+   368→          </Button>
+   369→        </div>
+   370→      </div>
+   371→
+   372→      {/* Main Content: Sidebar | Preview+Timeline | Properties */}
+   373→      <div className="flex-1 flex overflow-hidden">
+   374→
+   375→        {/* ─── LEFT SIDEBAR ──────────────────────────────────────── */}
+   376→        <div className="w-12 border-r border-zinc-800/60 bg-zinc-950/50 flex flex-col items-center py-2 gap-0.5 flex-shrink-0">
+   377→          {SIDEBAR_TOOLS.map(tool => {
+   378→            const Icon = ICON_MAP[tool.icon] || Settings;
+   379→            const isActive = activeTool === tool.id;
+   380→            return (
+   381→              <button
+   382→                key={tool.id}
+   383→                onClick={() => setActiveTool(tool.id)}
+   384→                className={`w-10 h-9 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all text-[9px] ${
+   385→                  isActive ? 'bg-violet-500/15 text-violet-400' : 'text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800/50'
+   386→                }`}
+   387→                title={tool.label}
+   388→              >
+   389→                <Icon className="w-3.5 h-3.5" />
+   390→                <span className="leading-none">{tool.label.split(' ')[0]}</span>
+   391→              </button>
+   392→            );
+   393→          })}
+   394→        </div>
+   395→
+   396→        {/* ─── LEFT TOOL PANEL ───────────────────────────────────── */}
+   397→        <div className="w-64 border-r border-zinc-800/60 bg-zinc-950/30 flex-shrink-0 overflow-hidden flex flex-col">
+   398→          <ToolPanel
+   399→            tool={activeTool}
+   400→            project={project}
+   401→            updateProject={updateProject}
+   402→            onGenerateAd={generateFullAd}
+   403→            aiLoading={aiLoading}
+   404→            aiPrompt={aiPrompt}
+   405→            setAiPrompt={setAiPrompt}
+   406→            logs={logs}
+   407→          />
+   408→        </div>
+   409→
+   410→        {/* ─── CENTER: PREVIEW + TIMELINE ───────────────────────── */}
+   411→        <div className="flex-1 flex flex-col overflow-hidden">
+   412→          {/* Preview Window */}
+   413→          <div className="flex-1 flex items-center justify-center bg-[#08080a] p-4 min-h-0">
+   414→            <PreviewWindow
+   415→              project={project}
+   416→              currentScene={currentSceneAtPlayhead}
+   417→              playheadTime={playheadTime}
+   418→              sceneStartTimes={sceneStartTimes}
+   419→              isPlaying={isPlaying}
+   420→              isMuted={isMuted}
+   421→              onPlayPause={() => setIsPlaying(!isPlaying)}
+   422→              onStop={() => { setIsPlaying(false); setPlayheadTime(0); }}
+   423→              onMuteToggle={() => setIsMuted(!isMuted)}
+   424→              onSeek={setPlayheadTime}
+   425→            />
+   426→          </div>
+   427→
+   428→          {/* Timeline */}
+   429→          <div className="h-[280px] border-t border-zinc-800/60 bg-zinc-950/50 flex-shrink-0 flex flex-col">
+   430→            {/* Timeline toolbar */}
+   431→            <div className="h-8 border-b border-zinc-800/40 flex items-center justify-between px-3 flex-shrink-0">
+   432→              <div className="flex items-center gap-1.5">
+   433→                <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-500" onClick={() => setTimelineZoom(z => Math.max(0.5, z - 0.25))}>
+   434→                  <ZoomOut className="w-3 h-3" />
+   435→                </Button>
+   436→                <span className="text-[10px] text-zinc-600 w-10 text-center">{Math.round(timelineZoom * 100)}%</span>
+   437→                <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-500" onClick={() => setTimelineZoom(z => Math.min(3, z + 0.25))}>
+   438→                  <ZoomIn className="w-3 h-3" />
+   439→                </Button>
+   440→                <Separator orientation="vertical" className="h-4 bg-zinc-800 mx-1" />
+   441→                <Button variant="ghost" size="sm" className="h-6 text-[10px] text-zinc-500 hover:text-zinc-300" onClick={addScene}>
+   442→                  <Plus className="w-3 h-3 mr-1" /> Scene
+   443→                </Button>
+   444→                <span className="text-[10px] text-zinc-600">{project.scenes.length} scenes</span>
+   445→                <span className="text-[10px] text-zinc-600 ml-2">{totalDuration.toFixed(1)}s</span>
+   446→              </div>
+   447→              <div className="flex items-center gap-1">
+   448→                <Button variant="ghost" size="sm" className="h-6 text-[10px] text-zinc-500" onClick={() => setPlayheadTime(0)}>
+   449→                  <SkipBack className="w-3 h-3 mr-1" /> Start
+   450→                </Button>
+   451→              </div>
+   452→            </div>
+   453→
+   454→            {/* Timeline tracks */}
+   455→            <TimelineArea
+   456→              project={project}
+   457→              timelineZoom={timelineZoom}
+   458→              playheadTime={playheadTime}
+   459→              selectedSceneId={selectedSceneId}
+   460→              sceneStartTimes={sceneStartTimes}
+   461→              onSceneSelect={setSelectedSceneId}
+   462→              onSceneDurationChange={(id, dur) => updateScene(id, { duration: Math.max(1, dur) })}
+   463→            />
+   464→          </div>
+   465→        </div>
+   466→
+   467→        {/* ─── RIGHT PROPERTIES PANEL ───────────────────────────── */}
+   468→        <div className="w-72 border-l border-zinc-800/60 bg-zinc-950/30 flex-shrink-0 overflow-hidden">
+   469→          <PropertiesPanel
+   470→            scene={selectedScene}
+   471→            onUpdate={(updates) => selectedSceneId && updateScene(selectedSceneId, updates)}
+   472→            onGenerateImage={() => selectedSceneId && generateImage(selectedSceneId)}
+   473→            onGenerateVoice={() => selectedSceneId && generateVoice(selectedSceneId)}
+   474→            generatingImage={generatingImageSceneId === selectedSceneId}
+   475→            generatingVoice={generatingVoiceSceneId === selectedSceneId}
+   476→            onDelete={() => selectedSceneId && deleteScene(selectedSceneId)}
+   477→            onDuplicate={() => selectedSceneId && duplicateScene(selectedSceneId)}
+   478→            onMoveUp={() => selectedSceneId && moveScene(selectedSceneId, -1)}
+   479→            onMoveDown={() => selectedSceneId && moveScene(selectedSceneId, 1)}
+   480→          />
+   481→        </div>
+   482→      </div>
+   483→
+   484→      {/* Scene Edit Dialog */}
+   485→      <Dialog open={showSceneDialog} onOpenChange={setShowSceneDialog}>
+   486→        <DialogContent className="max-w-lg bg-zinc-950 border-zinc-800 text-white">
+   487→          <DialogHeader>
+   488→            <DialogTitle>Edit Scene</DialogTitle>
+   489→            <DialogDescription className="text-zinc-500">Voice script and image prompt</DialogDescription>
+   490→          </DialogHeader>
+   491→          {editingScene && (
+   492→            <SceneEditForm
+   493→              scene={editingScene}
+   494→              onChange={(updates) => setEditingScene({ ...editingScene, ...updates })}
+   495→              onSave={() => {
+   496→                if (editingScene) updateScene(editingScene.id, editingScene);
+   497→                setShowSceneDialog(false);
+   498→              }}
+   499→              onGenerateImage={() => editingScene && generateImage(editingScene.id)}
+   500→              onGenerateVoice={() => editingScene && generateVoice(editingScene.id)}
+   501→            />
+   502→          )}
+   503→        </DialogContent>
+   504→      </Dialog>
+   505→    </div>
+   506→  );
+   507→}
+   508→
+   509→// ─── NEW PROJECT DIALOG ────────────────────────────────────────────
+   510→function NewProjectDialog({ onSubmit }: { onSubmit: (p: Partial<Project>) => void }) {
+   511→  const [product, setProduct] = useState('');
+   512→  const [category, setCategory] = useState('');
+   513→  const [audience, setAudience] = useState('');
+   514→  const [sellingPoint, setSellingPoint] = useState('');
+   515→  const [style, setStyle] = useState('');
+   516→  const [tone, setTone] = useState('Professional');
+   517→  const [duration, setDuration] = useState(20);
+   518→  const [colors, setColors] = useState('#7C3AED,#F59E0B');
+   519→
+   520→  return (
+   521→    <div className="h-screen flex items-center justify-center bg-[#09090b]">
+   522→      <div className="w-full max-w-xl">
+   523→        <div className="text-center mb-8">
+   524→          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-amber-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-violet-500/20">
+   525→            <Wand2 className="w-6 h-6 text-white" />
+   526→          </div>
+   527→          <h1 className="text-2xl font-bold">MarketMind AI</h1>
+   528→          <p className="text-zinc-500 text-sm mt-1">Create a new ad project</p>
+   529→        </div>
+   530→
+   531→        <div className="bg-zinc-900/50 border border-zinc-800/50 rounded-2xl p-6 space-y-4">
+   532→          <div className="space-y-1.5">
+   533→            <Label className="text-zinc-400 text-xs">Product / Brand Name *</Label>
+   534→            <Input value={product} onChange={e => setProduct(e.target.value)} placeholder='e.g., "Notion AI", "Gymshark"' className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   535→          </div>
+   536→
+   537→          <div className="grid grid-cols-2 gap-3">
+   538→            <div className="space-y-1.5">
+   539→              <Label className="text-zinc-400 text-xs">Category</Label>
+   540→              <Select value={category} onValueChange={setCategory}>
+   541→                <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-10"><SelectValue placeholder="Select..." /></SelectTrigger>
+   542→                <SelectContent className="bg-zinc-900 border-zinc-700">
+   543→                  {CATEGORY_OPTIONS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+   544→                </SelectContent>
+   545→              </Select>
+   546→            </div>
+   547→            <div className="space-y-1.5">
+   548→              <Label className="text-zinc-400 text-xs">Tone</Label>
+   549→              <Select value={tone} onValueChange={setTone}>
+   550→                <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-10"><SelectValue /></SelectTrigger>
+   551→                <SelectContent className="bg-zinc-900 border-zinc-700">
+   552→                  {TONE_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+   553→                </SelectContent>
+   554→              </Select>
+   555→            </div>
+   556→          </div>
+   557→
+   558→          <div className="space-y-1.5">
+   559→            <Label className="text-zinc-400 text-xs">Target Audience</Label>
+   560→            <Input value={audience} onChange={e => setAudience(e.target.value)} placeholder="e.g., Small business owners, Gen Z, Developers" className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   561→          </div>
+   562→
+   563→          <div className="space-y-1.5">
+   564→            <Label className="text-zinc-400 text-xs">Key Selling Point</Label>
+   565→            <Input value={sellingPoint} onChange={e => setSellingPoint(e.target.value)} placeholder="e.g., Save 10 hours per week, 50% cheaper than competitors" className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   566→          </div>
+   567→
+   568→          <div className="grid grid-cols-3 gap-3">
+   569→            <div className="space-y-1.5">
+   570→              <Label className="text-zinc-400 text-xs">Visual Style</Label>
+   571→              <Input value={style} onChange={e => setStyle(e.target.value)} placeholder="e.g., dark luxury" className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   572→            </div>
+   573→            <div className="space-y-1.5">
+   574→              <Label className="text-zinc-400 text-xs">Duration (sec)</Label>
+   575→              <Input type="number" value={duration} onChange={e => setDuration(parseInt(e.target.value) || 20)} min={5} max={120} className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   576→            </div>
+   577→            <div className="space-y-1.5">
+   578→              <Label className="text-zinc-400 text-xs">Brand Colors</Label>
+   579→              <Input value={colors} onChange={e => setColors(e.target.value)} placeholder="#7C3AED,#F59E0B" className="bg-zinc-800/50 border-zinc-700/50 h-10" />
+   580→            </div>
+   581→          </div>
+   582→
+   583→          <Button
+   584→            className="w-full h-10 bg-gradient-to-r from-violet-600 to-amber-500 hover:from-violet-500 hover:to-amber-400 text-white font-semibold mt-2 disabled:opacity-40"
+   585→            disabled={!product.trim()}
+   586→            onClick={() => onSubmit({
+   587→              name: `${product} Ad`,
+   588→              product, category, targetAudience: audience,
+   589→              keySellingPoint: sellingPoint, visualStyle: style,
+   590→              tone, targetDuration: duration, brandColors: colors,
+   591→            })}
+   592→          >
+   593→            <Sparkles className="w-4 h-4 mr-2" /> Create Project
+   594→          </Button>
+   595→        </div>
+   596→      </div>
+   597→    </div>
+   598→  );
+   599→}
+   600→
+   601→// ─── TOOL PANEL ────────────────────────────────────────────────────
+   602→function ToolPanel({ tool, project, updateProject, onGenerateAd, aiLoading, aiPrompt, setAiPrompt, logs }: {
+   603→  tool: string; project: Project; updateProject: (u: Partial<Project>) => void;
+   604→  onGenerateAd: () => void; aiLoading: boolean; aiPrompt: string; setAiPrompt: (s: string) => void;
+   605→  logs: string[];
+   606→}) {
+   607→  return (
+   608→    <ScrollArea className="flex-1">
+   609→      <div className="p-3 space-y-3">
+   610→        {tool === 'generate' && (
+   611→          <div className="space-y-3">
+   612→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">AI Generate</h3>
+   613→            <p className="text-[11px] text-zinc-600">Describe the creative direction and AI will build the full ad.</p>
+   614→            <Textarea
+   615→              value={aiPrompt}
+   616→              onChange={e => setAiPrompt(e.target.value)}
+   617→              placeholder='e.g., "Make it cinematic and dramatic. Open with a close-up of the product, then show people using it."'
+   618→              className="bg-zinc-800/50 border-zinc-700/50 text-xs min-h-[100px] resize-none"
+   619→            />
+   620→            <Button
+   621→              className="w-full h-8 text-xs bg-violet-600 hover:bg-violet-500"
+   622→              onClick={onGenerateAd}
+   623→              disabled={aiLoading || !project.product}
+   624→            >
+   625→              {aiLoading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> Generating...</> : <><Sparkles className="w-3 h-3 mr-1.5" /> Generate Advertisement</>}
+   626→            </Button>
+   627→            <Separator className="bg-zinc-800/50" />
+   628→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Quick Generate</h3>
+   629→            {['Cinematic', 'Fast Paced', 'Minimal', 'Energetic', 'Luxury', 'Funny'].map(style => (
+   630→              <Button key={style} variant="ghost" size="sm" className="w-full justify-start text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 h-7 text-xs"
+   631→                onClick={() => { setAiPrompt(`Make it ${style.toLowerCase()}.`); }}
+   632→              >
+   633→                <Shuffle className="w-3 h-3 mr-2 text-zinc-600" /> {style}
+   634→              </Button>
+   635→            ))}
+   636→          </div>
+   637→        )}
+   638→
+   639→        {tool === 'settings' && (
+   640→          <div className="space-y-3">
+   641→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Project Settings</h3>
+   642→            <div className="space-y-1.5">
+   643→              <Label className="text-zinc-500 text-[10px]">AI Creative Freedom</Label>
+   644→              <Select value={project.aiFreedom} onValueChange={v => updateProject({ aiFreedom: v as any })}>
+   645→                <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+   646→                <SelectContent className="bg-zinc-900 border-zinc-700">
+   647→                  <SelectItem value="full">Full Creative — AI adds freely</SelectItem>
+   648→                  <SelectItem value="assisted">Assisted — AI enhances only</SelectItem>
+   649→                  <SelectItem value="strict">Strict — AI does exactly what you say</SelectItem>
+   650→                </SelectContent>
+   651→              </Select>
+   652→            </div>
+   653→            <div className="space-y-1.5">
+   654→              <Label className="text-zinc-500 text-[10px]">Default Voice</Label>
+   655→              <Select value="jam" onValueChange={() => {}}>
+   656→                <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+   657→                <SelectContent className="bg-zinc-900 border-zinc-700">
+   658→                  {VOICE_OPTIONS.map(v => <SelectItem key={v.value} value={v.value}>{v.label} — {v.desc}</SelectItem>)}
+   659→                </SelectContent>
+   660→              </Select>
+   661→            </div>
+   662→            <div className="space-y-1.5">
+   663→              <Label className="text-zinc-500 text-[10px]">Tone: {project.tone}</Label>
+   664→              <Select value={project.tone} onValueChange={v => updateProject({ tone: v })}>
+   665→                <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+   666→                <SelectContent className="bg-zinc-900 border-zinc-700">
+   667→                  {TONE_OPTIONS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+   668→                </SelectContent>
+   669→              </Select>
+   670→            </div>
+   671→          </div>
+   672→        )}
+   673→
+   674→        {tool === 'assistant' && (
+   675→          <div className="space-y-3">
+   676→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">AI Assistant</h3>
+   677→            <p className="text-[11px] text-zinc-600">Ask AI to modify your project. Select a scene first, then describe the change.</p>
+   678→            <Textarea
+   679→              placeholder='e.g., "Make scene 2 more dramatic", "Add a transition between scenes 1 and 2", "Rewrite the voice script to be more punchy"'
+   680→              className="bg-zinc-800/50 border-zinc-700/50 text-xs min-h-[80px] resize-none"
+   681→            />
+   682→            <Button className="w-full h-8 text-xs bg-violet-600 hover:bg-violet-500" disabled>
+   683→              <Bot className="w-3 h-3 mr-1.5" /> Apply AI Edit
+   684→            </Button>
+   685→          </div>
+   686→        )}
+   687→
+   688→        {tool === 'brand' && (
+   689→          <div className="space-y-3">
+   690→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Brand Kit</h3>
+   691→            <div className="space-y-1.5">
+   692→              <Label className="text-zinc-500 text-[10px]">Brand Colors</Label>
+   693→              <Input value={project.brandColors} onChange={e => updateProject({ brandColors: e.target.value })} placeholder="#7C3AED,#F59E0B" className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs" />
+   694→              <div className="flex gap-1 mt-1">
+   695→                {project.brandColors.split(',').map((c, i) => (
+   696→                  <div key={i} className="w-6 h-6 rounded border border-zinc-700" style={{ backgroundColor: c.trim() }} />
+   697→                ))}
+   698→              </div>
+   699→            </div>
+   700→            <div className="space-y-1.5">
+   701→              <Label className="text-zinc-500 text-[10px]">Visual Style</Label>
+   702→              <Input value={project.visualStyle} onChange={e => updateProject({ visualStyle: e.target.value })} placeholder="e.g., dark luxury, neon" className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs" />
+   703→            </div>
+   704→          </div>
+   705→        )}
+   706→
+   707→        {tool === 'export' && (
+   708→          <div className="space-y-3">
+   709→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Export</h3>
+   710→            <p className="text-[11px] text-zinc-600">Render all scenes into a final video. Uses the Export button in the top bar.</p>
+   711→            <div className="text-[11px] text-zinc-600 space-y-1">
+   712→              <p>Resolution: 1080 x 1920 (9:16)</p>
+   713→              <p>Format: MP4 (H.264)</p>
+   714→              <p>Scenes: {project.scenes.length}</p>
+   715→              <p>Duration: {project.scenes.reduce((s, sc) => s + sc.duration, 0).toFixed(1)}s</p>
+   716→            </div>
+   717→          </div>
+   718→        )}
+   719→
+   720→        {(tool === 'voice' || tool === 'music' || tool === 'effects' || tool === 'templates' || tool === 'assets') && (
+   721→          <div className="space-y-3">
+   722→            <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">{SIDEBAR_TOOLS.find(t => t.id === tool)?.label}</h3>
+   723→            <p className="text-[11px] text-zinc-600">
+   724→              {tool === 'voice' && 'Voice settings are per-scene. Select a scene and configure voice in the Properties panel.'}
+   725→              {tool === 'music' && 'Background music coming soon. Add music tracks to the timeline.'}
+   726→              {tool === 'effects' && 'Effects and transitions are configured per-scene in the Properties panel.'}
+   727→              {tool === 'templates' && 'Ad templates coming soon. Start from a pre-built structure.'}
+   728→              {tool === 'assets' && 'Project assets will appear here as you generate images and voiceovers.'}
+   729→            </p>
+   730→          </div>
+   731→        )}
+   732→
+   733→        {/* Activity Log (always shown at bottom) */}
+   734→        <Separator className="bg-zinc-800/50" />
+   735→        <div className="space-y-2">
+   736→          <h3 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Activity</h3>
+   737→          <div className="bg-black/30 rounded-lg p-2 max-h-[150px] overflow-y-auto font-mono text-[9px] leading-relaxed">
+   738→            {logs.length === 0 ? <p className="text-zinc-700">Waiting...</p> : logs.map((l, i) => <p key={i} className="text-zinc-600">{l}</p>)}
+   739→          </div>
+   740→        </div>
+   741→      </div>
+   742→    </ScrollArea>
+   743→  );
+   744→}
+   745→
+   746→// ─── PREVIEW WINDOW ────────────────────────────────────────────────
+   747→function PreviewWindow({ project, currentScene, playheadTime, sceneStartTimes, isPlaying, isMuted, onPlayPause, onStop, onMuteToggle, onSeek }: {
+   748→  project: Project; currentScene: Scene | null; playheadTime: number;
+   749→  sceneStartTimes: Record<string, number>; isPlaying: boolean; isMuted: boolean;
+   750→  onPlayPause: () => void; onStop: () => void; onMuteToggle: () => void; onSeek: (t: number) => void;
+   751→}) {
+   752→  const scene = currentScene || project.scenes[0];
+   753→  const totalDuration = project.scenes.reduce((s, sc) => s + sc.duration, 0);
+   754→
+   755→  return (
+   756→    <div className="flex flex-col items-center gap-2 w-full max-w-[260px]">
+   757→      {/* Video frame */}
+   758→      <div className="relative w-full aspect-[9/16] bg-[#0a0a0f] rounded-xl overflow-hidden border border-zinc-800/50 shadow-2xl shadow-black/50">
+   759→        {scene?.imageUrl ? (
+   760→          <img src={scene.imageUrl} alt="" className="w-full h-full object-cover" />
+   761→        ) : (
+   762→          <div className="w-full h-full flex flex-col items-center justify-center gap-2">
+   763→            <Image className="w-8 h-8 text-zinc-800" />
+   764→            <p className="text-zinc-700 text-xs">No image</p>
+   765→            <p className="text-zinc-800 text-[10px]">Generate or upload in Properties</p>
+   766→          </div>
+   767→        )}
+   768→        {/* Overlay text */}
+   769→        {scene?.overlayText && (
+   770→          <div className="absolute inset-x-0 bottom-16 flex justify-center">
+   771→            <span className="text-white text-sm font-bold drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] text-center px-4">{scene.overlayText}</span>
+   772→          </div>
+   773→        )}
+   774→        {/* Gradients */}
+   775→        <div className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-black/30 to-transparent pointer-events-none" />
+   776→        <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/60 to-transparent pointer-events-none" />
+   777→        {/* Time badge */}
+   778→        <div className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm rounded px-1.5 py-0.5">
+   779→          <span className="text-white text-[10px] font-medium">{playheadTime.toFixed(1)}s / {totalDuration.toFixed(1)}s</span>
+   780→        </div>
+   781→        {/* Camera badge */}
+   782→        {scene?.camera && scene.camera !== 'static' && (
+   783→          <div className="absolute top-2 left-2 bg-black/50 backdrop-blur-sm rounded px-1.5 py-0.5">
+   784→            <span className="text-violet-300 text-[9px] font-medium">{scene.camera.replace('_', ' ')}</span>
+   785→          </div>
+   786→        )}
+   787→      </div>
+   788→
+   789→      {/* Playback controls */}
+   790→      <div className="flex items-center gap-1.5">
+   791→        <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-zinc-300" onClick={onStop}>
+   792→          <SkipBack className="w-3.5 h-3.5" />
+   793→        </Button>
+   794→        <Button variant="ghost" size="icon" className="h-8 w-8 bg-zinc-800/50 text-white hover:text-white hover:bg-zinc-700/50 rounded-full" onClick={onPlayPause}>
+   795→          {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+   796→        </Button>
+   797→        <Button variant="ghost" size="icon" className="h-7 w-7 text-zinc-500 hover:text-zinc-300" onClick={onMuteToggle}>
+   798→          {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+   799→        </Button>
+   800→        <span className="text-[10px] text-zinc-600 ml-2">{totalDuration.toFixed(1)}s</span>
+   801→      </div>
+   802→    </div>
+   803→  );
+   804→}
+   805→
+   806→// ─── TIMELINE AREA ─────────────────────────────────────────────────
+   807→function TimelineArea({ project, timelineZoom, playheadTime, selectedSceneId, sceneStartTimes, onSceneSelect, onSceneDurationChange }: {
+   808→  project: Project; timelineZoom: number; playheadTime: number;
+   809→  selectedSceneId: string | null; sceneStartTimes: Record<string, number>;
+   810→  onSceneSelect: (id: string | null) => void;
+   811→  onSceneDurationChange: (id: string, duration: number) => void;
+   812→}) {
+   813→  const totalDuration = project.scenes.reduce((s, sc) => s + sc.duration, 0);
+   814→  const pps = PIXELS_PER_SECOND * timelineZoom; // pixels per second
+   815→  const trackWidth = Math.max(800, totalDuration * pps + 100);
+   816→  const [resizingSceneId, setResizingSceneId] = useState<string | null>(null);
+   817→  const resizeStartX = useRef(0);
+   818→  const resizeStartDur = useRef(0);
+   819→
+   820→  const handleResizeStart = (e: React.MouseEvent, sceneId: string) => {
+   821→    e.stopPropagation();
+   822→    setResizingSceneId(sceneId);
+   823→    resizeStartX.current = e.clientX;
+   824→    resizeStartDur.current = project.scenes.find(s => s.id === sceneId)?.duration || 4;
+   825→  };
+   826→
+   827→  useEffect(() => {
+   828→    if (!resizingSceneId) return;
+   829→    const handleMove = (e: MouseEvent) => {
+   830→      const dx = e.clientX - resizeStartX.current;
+   831→      const newDur = Math.max(1, Math.round((resizeStartDur.current + dx / pps) * 2) / 2);
+   832→      onSceneDurationChange(resizingSceneId, newDur);
+   833→    };
+   834→    const handleUp = () => setResizingSceneId(null);
+   835→    window.addEventListener('mousemove', handleMove);
+   836→    window.addEventListener('mouseup', handleUp);
+   837→    return () => { window.removeEventListener('mousemove', handleMove); window.removeEventListener('mouseup', handleUp); };
+   838→  }, [resizingSceneId, pps, onSceneDurationChange]);
+   839→
+   840→  return (
+   841→    <div className="flex-1 overflow-auto" ref={timelineRef}>
+   842→      <div className="relative min-h-full" style={{ width: trackWidth }}>
+   843→        {/* Time ruler */}
+   844→        <div className="h-6 border-b border-zinc-800/30 relative flex-shrink-0">
+   845→          {Array.from({ length: Math.ceil(totalDuration) + 1 }).map((_, i) => (
+   846→            <div key={i} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: i * pps }}>
+   847→              <span className="text-[9px] text-zinc-600 mt-0.5">{i}s</span>
+   848→              <div className="w-px h-2 bg-zinc-800/50" />
+   849→            </div>
+   850→          ))}
+   851→          {/* Playhead */}
+   852→          <div className="absolute top-0 bottom-0 w-px bg-red-500 z-20" style={{ left: playheadTime * pps }}>
+   853→            <div className="w-2.5 h-2.5 bg-red-500 rounded-sm -ml-[4px] -mt-0.5" />
+   854→          </div>
+   855→        </div>
+   856→
+   857→        {/* Tracks */}
+   858→        {TRACKS.filter(t => t.type === 'image' || t.type === 'voice' || t.type === 'text').map(track => (
+   859→          <div key={track.type} className="flex border-b border-zinc-800/20" style={{ height: track.height }}>
+   860→            {/* Track label */}
+   861→            <div className="w-16 flex-shrink-0 border-r border-zinc-800/30 flex items-center px-2">
+   862→              <span className="text-[9px] text-zinc-600 font-medium">{track.label}</span>
+   863→            </div>
+   864→            {/* Track content */}
+   865→            <div className="flex-1 relative py-1">
+   866→              {project.scenes.map((scene) => {
+   867→                const start = sceneStartTimes[scene.id] || 0;
+   868→                const isImageTrack = track.type === 'image';
+   869→                const isVoiceTrack = track.type === 'voice';
+   870→                const isTextTrack = track.type === 'text';
+   871→
+   872→                if (isImageTrack) {
+   873→                  const isSelected = scene.id === selectedSceneId;
+   874→                  return (
+   875→                    <div key={scene.id} className="absolute top-1 bottom-1 group" style={{ left: start * pps, width: scene.duration * pps }}>
+   876→                      <div
+   877→                        onClick={() => onSceneSelect(scene.id)}
+   878→                        className={`h-full rounded-md cursor-pointer border transition-all flex items-center gap-1 px-2 overflow-hidden ${
+   879→                          isSelected
+   880→                            ? 'border-violet-400 bg-violet-500/20 shadow-sm shadow-violet-500/20'
+   881→                            : 'border-zinc-700/30 bg-zinc-800/40 hover:bg-zinc-800/60'
+   882→                        }`}
+   883→                      >
+   884→                        {scene.imageUrl ? (
+   885→                          <img src={scene.imageUrl} alt="" className="h-full w-10 object-cover rounded-sm flex-shrink-0" />
+   886→                        ) : (
+   887→                          <Image className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+   888→                        )}
+   889→                        <span className="text-[9px] text-zinc-400 truncate">{scene.overlayText || `Scene ${scene.order + 1}`}</span>
+   890→                      </div>
+   891→                      {/* Resize handle */}
+   892→                      <div
+   893→                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-violet-500/30 rounded-r-md hover:bg-violet-500/50 transition-opacity"
+   894→                        onMouseDown={e => handleResizeStart(e, scene.id)}
+   895→                      />
+   896→                    </div>
+   897→                  );
+   898→                }
+   899→
+   900→                if (isVoiceTrack && scene.voiceScript) {
+   901→                  return (
+   902→                    <div key={scene.id} className="absolute top-1 bottom-1" style={{ left: start * pps, width: scene.duration * pps }}>
+   903→                      <div className={`h-full rounded-md border border-emerald-500/20 bg-emerald-500/10 flex items-center px-2 overflow-hidden cursor-pointer ${scene.id === selectedSceneId ? 'border-emerald-400' : ''}`}
+   904→                        onClick={() => onSceneSelect(scene.id)}
+   905→                      >
+   906→                        <Mic className="w-3 h-3 text-emerald-500/60 flex-shrink-0 mr-1" />
+   907→                        <span className="text-[9px] text-emerald-400/60 truncate">{scene.voiceScript.substring(0, 30)}...</span>
+   908→                      </div>
+   909→                    </div>
+   910→                  );
+   911→                }
+   912→
+   913→                if (isTextTrack && scene.overlayText) {
+   914→                  return (
+   915→                    <div key={scene.id} className="absolute top-1 bottom-1" style={{ left: start * pps, width: scene.duration * pps }}>
+   916→                      <div className="h-full rounded-md border border-amber-500/20 bg-amber-500/10 flex items-center px-2 overflow-hidden cursor-pointer"
+   917→                        onClick={() => onSceneSelect(scene.id)}
+   918→                      >
+   919→                        <Type className="w-3 h-3 text-amber-500/60 flex-shrink-0 mr-1" />
+   920→                        <span className="text-[9px] text-amber-400/60 truncate">{scene.overlayText}</span>
+   921→                      </div>
+   922→                    </div>
+   923→                  );
+   924→                }
+   925→
+   926→                return null;
+   927→              })}
+   928→            </div>
+   929→          </div>
+   930→        ))}
+   931→      </div>
+   932→    </div>
+   933→  );
+   934→}
+   935→
+   936→// ─── PROPERTIES PANEL ──────────────────────────────────────────────
+   937→function PropertiesPanel({ scene, onUpdate, onGenerateImage, onGenerateVoice, generatingImage, generatingVoice, onDelete, onDuplicate, onMoveUp, onMoveDown }: {
+   938→  scene: Scene | null; onUpdate: (u: Partial<Scene>) => void;
+   939→  onGenerateImage: () => void; onGenerateVoice: () => void;
+   940→  generatingImage: boolean; generatingVoice: boolean;
+   941→  onDelete: () => void; onDuplicate: () => void; onMoveUp: () => void; onMoveDown: () => void;
+   942→}) {
+   943→  if (!scene) {
+   944→    return (
+   945→      <div className="h-full flex items-center justify-center p-4">
+   946→        <p className="text-zinc-700 text-xs text-center">Select a scene on the timeline to edit its properties</p>
+   947→      </div>
+   948→    );
+   949→  }
+   950→
+   951→  return (
+   952→    <ScrollArea className="h-full">
+   953→      <div className="p-3 space-y-4">
+   954→        <div className="flex items-center justify-between">
+   955→          <h3 className="text-xs font-semibold text-zinc-400">Scene {scene.order + 1}</h3>
+   956→          <div className="flex gap-0.5">
+   957→            <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-600 hover:text-zinc-300" onClick={onMoveUp}><ChevronLeft className="w-3 h-3" /></Button>
+   958→            <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-600 hover:text-zinc-300" onClick={onMoveDown}><ChevronRight className="w-3 h-3" /></Button>
+   959→            <Button variant="ghost" size="icon" className="h-6 w-6 text-zinc-600 hover:text-zinc-300" onClick={onDuplicate}><Copy className="w-3 h-3" /></Button>
+   960→            <Button variant="ghost" size="icon" className="h-6 w-6 text-red-600/60 hover:text-red-400" onClick={onDelete}><Trash2 className="w-3 h-3" /></Button>
+   961→          </div>
+   962→        </div>
+   963→
+   964→        {/* Image Preview */}
+   965→        {scene.imageUrl ? (
+   966→          <div className="aspect-[9/16] rounded-lg overflow-hidden bg-zinc-800/30 border border-zinc-800/50">
+   967→            <img src={scene.imageUrl} alt="" className="w-full h-full object-cover" />
+   968→          </div>
+   969→        ) : (
+   970→          <div className="aspect-[9/16] rounded-lg bg-zinc-800/20 border border-dashed border-zinc-700/30 flex flex-col items-center justify-center gap-2">
+   971→            <Image className="w-6 h-6 text-zinc-700" />
+   972→            <p className="text-zinc-700 text-[10px]">No image</p>
+   973→          </div>
+   974→        )}
+   975→
+   976→        {/* Duration */}
+   977→        <div className="space-y-1">
+   978→          <div className="flex justify-between">
+   979→            <Label className="text-zinc-500 text-[10px]">Duration</Label>
+   980→            <span className="text-[10px] text-zinc-400">{scene.duration}s</span>
+   981→          </div>
+   982→          <Slider value={[scene.duration]} min={1} max={15} step={0.5} onValueChange={([v]) => onUpdate({ duration: v })} className="py-1" />
+   983→        </div>
+   984→
+   985→        <Separator className="bg-zinc-800/40" />
+   986→
+   987→        {/* Image Prompt */}
+   988→        <div className="space-y-1.5">
+   989→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Image</Label>
+   990→          <Textarea
+   991→            value={scene.imagePrompt}
+   992→            onChange={e => onUpdate({ imagePrompt: e.target.value })}
+   993→            placeholder="Describe the cinematic image for this scene..."
+   994→            className="bg-zinc-800/50 border-zinc-700/50 text-[11px] min-h-[70px] resize-none"
+   995→          />
+   996→          <Button size="sm" className="w-full h-7 text-[10px] bg-violet-600 hover:bg-violet-500" onClick={onGenerateImage} disabled={generatingImage || !scene.imagePrompt}>
+   997→            {generatingImage ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Generating...</> : <><Sparkles className="w-3 h-3 mr-1" /> Generate Image</>}
+   998→          </Button>
+   999→        </div>
+  1000→
+  1001→        <Separator className="bg-zinc-800/40" />
+  1002→
+  1003→        {/* Voice Script */}
+  1004→        <div className="space-y-1.5">
+  1005→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Voice Script</Label>
+  1006→          <Textarea
+  1007→            value={scene.voiceScript}
+  1008→            onChange={e => onUpdate({ voiceScript: e.target.value })}
+  1009→            placeholder="What the voiceover says in this scene..."
+  1010→            className="bg-zinc-800/50 border-zinc-700/50 text-[11px] min-h-[60px] resize-none"
+  1011→          />
+  1012→          <div className="flex items-center gap-2">
+  1013→            <Button size="sm" className="flex-1 h-7 text-[10px] bg-emerald-600 hover:bg-emerald-500" onClick={onGenerateVoice} disabled={generatingVoice || !scene.voiceScript}>
+  1014→              {generatingVoice ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Recording...</> : <><Mic className="w-3 h-3 mr-1" /> Generate Voice</>}
+  1015→            </Button>
+  1016→            {scene.voiceUrl && (
+  1017→              <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[9px]"><CheckCircle2 className="w-2.5 h-2.5 mr-0.5" /> Done</Badge>
+  1018→            )}
+  1019→          </div>
+  1020→        </div>
+  1021→
+  1022→        <Separator className="bg-zinc-800/40" />
+  1023→
+  1024→        {/* Overlay Text */}
+  1025→        <div className="space-y-1.5">
+  1026→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Overlay Text</Label>
+  1027→          <Input value={scene.overlayText} onChange={e => onUpdate({ overlayText: e.target.value })} placeholder="Big text on screen (max 8 words)" className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs" />
+  1028→        </div>
+  1029→
+  1030→        {/* Camera */}
+  1031→        <div className="space-y-1.5">
+  1032→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Camera Movement</Label>
+  1033→          <Select value={scene.camera} onValueChange={v => onUpdate({ camera: v as any })}>
+  1034→            <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+  1035→            <SelectContent className="bg-zinc-900 border-zinc-700">
+  1036→              {CAMERA_OPTIONS.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+  1037→            </SelectContent>
+  1038→          </Select>
+  1039→        </div>
+  1040→
+  1041→        {/* Transition */}
+  1042→        <div className="space-y-1.5">
+  1043→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Transition Out</Label>
+  1044→          <Select value={scene.transition} onValueChange={v => onUpdate({ transition: v as any })}>
+  1045→            <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+  1046→            <SelectContent className="bg-zinc-900 border-zinc-700">
+  1047→              {TRANSITION_OPTIONS.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+  1048→            </SelectContent>
+  1049→          </Select>
+  1050→        </div>
+  1051→
+  1052→        {/* Text Animation */}
+  1053→        <div className="space-y-1.5">
+  1054→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Text Animation</Label>
+  1055→          <Select value={scene.textAnimation} onValueChange={v => onUpdate({ textAnimation: v as any })}>
+  1056→            <SelectTrigger className="bg-zinc-800/50 border-zinc-700/50 h-8 text-xs"><SelectValue /></SelectTrigger>
+  1057→            <SelectContent className="bg-zinc-900 border-zinc-700">
+  1058→              {TEXT_ANIMATIONS.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+  1059→            </SelectContent>
+  1060→          </Select>
+  1061→        </div>
+  1062→
+  1063→        {/* Notes */}
+  1064→        <div className="space-y-1.5">
+  1065→          <Label className="text-zinc-500 text-[10px] uppercase tracking-wider">Notes</Label>
+  1066→          <Textarea value={scene.notes} onChange={e => onUpdate({ notes: e.target.value })} placeholder="Internal notes..." className="bg-zinc-800/50 border-zinc-700/50 text-[11px] min-h-[40px] resize-none" />
+  1067→        </div>
+  1068→      </div>
+  1069→    </ScrollArea>
+  1070→  );
+  1071→}
+  1072→
+  1073→// ─── SCENE EDIT FORM (dialog) ──────────────────────────────────────
+  1074→function SceneEditForm({ scene, onChange, onSave, onGenerateImage, onGenerateVoice }: {
+  1075→  scene: Scene; onChange: (u: Partial<Scene>) => void; onSave: () => void;
+  1076→  onGenerateImage: () => void; onGenerateVoice: () => void;
+  1077→}) {
+  1078→  return (
+  1079→    <div className="space-y-4 mt-2">
+  1080→      <div className="space-y-1.5">
+  1081→        <Label className="text-zinc-400 text-xs">Voice Script</Label>
+  1082→        <Textarea value={scene.voiceScript} onChange={e => onChange({ voiceScript: e.target.value })} className="bg-zinc-800/50 border-zinc-700/50 text-sm min-h-[80px]" />
+  1083→        <Button size="sm" variant="outline" className="h-7 text-xs border-emerald-500/30 text-emerald-400" onClick={onGenerateVoice}>
+  1084→          <Mic className="w-3 h-3 mr-1" /> Generate Voice
+  1085→        </Button>
+  1086→      </div>
+  1087→      <div className="space-y-1.5">
+  1088→        <Label className="text-zinc-400 text-xs">Image Prompt</Label>
+  1089→        <Textarea value={scene.imagePrompt} onChange={e => onChange({ imagePrompt: e.target.value })} className="bg-zinc-800/50 border-zinc-700/50 text-sm min-h-[80px]" />
+  1090→        <Button size="sm" variant="outline" className="h-7 text-xs border-violet-500/30 text-violet-400" onClick={onGenerateImage}>
+  1091→          <Sparkles className="w-3 h-3 mr-1" /> Generate Image
+  1092→        </Button>
+  1093→      </div>
+  1094→      <Button className="w-full" onClick={onSave}>Save</Button>
+  1095→    </div>
+  1096→  );
+  1097→}
